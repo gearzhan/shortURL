@@ -9,39 +9,27 @@
 	"compatibility_date": "2025-07-25",
 	"observability": {
 		"enabled": true
-	}
-	/**
-	 * Smart Placement
-	 * Docs: https://developers.cloudflare.com/workers/configuration/smart-placement/#smart-placement
-	 */
-	// "placement": { "mode": "smart" },
+	},
+	// KV namespace for storing URL mappings
+	"kv_namespaces": [
+		{
+			"binding": "URLS",
+			"id": "e930a18c42544f58a72601af6bcb4215",
+			"preview_id": "6675ed43b3224481846f48b443f1b2ac"
+		}
+	],
 
-	/**
-	 * Bindings
-	 * Bindings allow your Worker to interact with resources on the Cloudflare Developer Platform, including
-	 * databases, object storage, AI inference, real-time communication and more.
-	 * https://developers.cloudflare.com/workers/runtime-apis/bindings/
-	 */
-
-	/**
-	 * Environment Variables
-	 * https://developers.cloudflare.com/workers/wrangler/configuration/#environment-variables
-	 */
+	// Environment variables can be added here if needed
 	// "vars": { "MY_VARIABLE": "production_value" },
-	/**
-	 * Note: Use secrets to store sensitive data.
-	 * https://developers.cloudflare.com/workers/configuration/secrets/
-	 */
-
-	/**
-	 * Static Assets
-	 * https://developers.cloudflare.com/workers/static-assets/binding/
-	 */
+	
+	// Static assets can be added here if needed
 	// "assets": { "directory": "./public/", "binding": "ASSETS" },
-
-	/**
-	 * Service Bindings (communicate between multiple Workers)
-	 * https://developers.cloudflare.com/workers/wrangler/configuration/#service-bindings
-	 */
+	
+	// Service bindings can be added here if needed
 	// "services": [{ "binding": "MY_SERVICE", "service": "my-service" }]
+	
+	// Custom domains (uncomment and add your domain)
+	// "routes": [
+	//   { "pattern": "short.yourdomain.com", "zone_name": "yourdomain.com" }
+	// ]
 }
