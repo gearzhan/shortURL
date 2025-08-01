@@ -1015,12 +1015,12 @@ async function serveMainPage(request: Request): Promise<Response> {
                             const expiresText = expiresAt.toLocaleString();
                             
                             if (isExpired) {
-                                expirationInfo = \`<span class="stat-chip" style="background: #fce8e6; color: #d93025;">已过期</span>\`;
+                                expirationInfo = \`<span class="stat-chip" style="background: #fce8e6; color: #d93025;">Expired</span>\`;
                             } else {
-                                expirationInfo = \`<span class="stat-chip warning">过期: \${expiresText}</span>\`;
+                                expirationInfo = \`<span class="stat-chip warning">Expires: \${expiresText}</span>\`;
                             }
                         } else {
-                            expirationInfo = \`<span class="stat-chip success">永久有效</span>\`;
+                            expirationInfo = \`<span class="stat-chip success">Permanent</span>\`;
                         }
                         
                         return \`
