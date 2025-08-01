@@ -1,56 +1,47 @@
 # 🔗 URL Shortener
 
-A fast, scalable URL shortening service built with Cloudflare Workers and KV storage. This service allows you to create short, memorable URLs that redirect to longer original URLs.
+一个基于 Cloudflare Workers 构建的快速、可扩展的短链接服务。
 
-## ✨ Features
+## ✨ 核心功能
 
-- **🔗 URL Shortening**: Convert long URLs into short, shareable links
-- **📝 Descriptions**: Add descriptions to remember what each link is for (required)
-- **📊 Analytics**: Track redirect counts and access times
-- **🔍 Search**: Search through all URLs by their descriptions
-- **📚 History**: View complete URL history with search functionality
-- **🌐 CORS Support**: Full CORS support for API integration
-- **⚡ Edge Performance**: Runs on Cloudflare's global edge network
-- **💾 Persistent Storage**: Uses Cloudflare KV for reliable data storage
-- **🎨 Beautiful UI**: Modern, responsive web interface
-- **🔒 Secure**: Input validation and error handling
+- **🔗 URL 短链生成**: 将长链接转换为短链接
+- **📝 描述标注**: 为每个链接添加描述便于管理
+- **📊 访问统计**: 跟踪重定向次数和访问时间
+- **🔍 搜索功能**: 通过描述搜索链接
+- **🌐 API 支持**: 完整的 REST API
+- **⚡ 边缘计算**: 运行在 Cloudflare 全球边缘网络
+- **🎨 Web 界面**: 现代化响应式界面
 
-## 🚀 Quick Start
+## 🚀 快速开始
 
-### Prerequisites
+### 环境要求
 
-- [Node.js](https://nodejs.org/) (v18 or higher)
-- [Cloudflare account](https://dash.cloudflare.com/sign-up)
+- [Node.js](https://nodejs.org/) (v18+)
+- [Cloudflare 账户](https://dash.cloudflare.com/sign-up)
 - [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/install-and-update/)
 
-### Installation
+### 安装部署
 
-1. **Clone the repository**
+1. **克隆项目**
    ```bash
    git clone <your-repo-url>
-   cd short
+   cd shortURL
    ```
 
-2. **Install dependencies**
+2. **安装依赖**
    ```bash
    npm install
    ```
 
-3. **Set up Cloudflare KV**
-   
-   First, create a KV namespace:
+3. **创建 KV 存储**
    ```bash
    npx wrangler kv:namespace create "URLS"
-   ```
-   
-   Then create a preview namespace for development:
-   ```bash
    npx wrangler kv:namespace create "URLS" --preview
    ```
 
-4. **Update configuration**
+4. **更新配置**
    
-   Update `wrangler.jsonc` with your KV namespace IDs:
+   在 `wrangler.jsonc` 中更新 KV namespace ID:
    ```json
    {
      "kv_namespaces": [
@@ -63,294 +54,87 @@ A fast, scalable URL shortening service built with Cloudflare Workers and KV sto
    }
    ```
 
-5. **Deploy to Cloudflare**
+5. **部署**
    ```bash
    npm run deploy
    ```
 
-## 🛠️ Development
+## 🛠️ 开发
 
-### Local Development
-
-Start the development server:
+### 本地开发
 ```bash
 npm run dev
 ```
 
-This will start a local development server at `http://localhost:8787`.
-
-### Testing
-
-Run the test suite:
+### 运行测试
 ```bash
 npm test
 ```
 
-Run tests in watch mode:
-```bash
-npm test -- --watch
-```
+## 📖 API 文档
 
-## 📖 API Reference
-
-### Base URL
-```
-https://your-worker.your-subdomain.workers.dev
-```
-
-### Endpoints
-
-#### Create Short URL
+### 创建短链接
 **POST** `/api/urls`
 
-Creates a new short URL.
-
-**Request Body:**
 ```json
 {
   "url": "https://example.com/very-long-url",
-  "description": "Description of what this URL is for" // required
+  "description": "链接描述"
 }
 ```
 
-**Response:**
-```json
-{
-  "shortUrl": "https://your-worker.workers.dev/abc123",
-  "originalUrl": "https://example.com/very-long-url",
-  "shortCode": "abc123",
-  "description": "Description of what this URL is for",
-  "createdAt": 1640995200000
-}
-```
-
-#### List URLs
+### 获取链接列表
 **GET** `/api/urls`
 
-Lists all created URLs with pagination.
+查询参数:
+- `limit`: 返回数量 (默认: 50)
+- `cursor`: 分页游标
 
-**Query Parameters:**
-- `limit` (optional): Number of URLs to return (default: 50)
-- `cursor` (optional): Pagination cursor
+### 搜索链接
+**GET** `/api/urls/search?q=关键词`
 
-**Response:**
-```json
-{
-  "urls": [
-    {
-      "originalUrl": "https://example.com/very-long-url",
-      "shortCode": "abc123",
-      "description": "Description of what this URL is for",
-      "createdAt": 1640995200000,
-      "redirectCount": 42,
-      "lastAccessed": 1640995300000
-    }
-  ],
-  "cursor": "next-page-cursor",
-  "listComplete": false
-}
-```
+### 获取统计信息
+**GET** `/api/urls/stats?code=短码`
 
-#### Get URL Statistics
-**GET** `/api/urls/stats`
-
-Get statistics for a specific short URL.
-
-**Query Parameters:**
-- `code` (required): The short code to get stats for
-
-**Response:**
-```json
-{
-  "shortCode": "abc123",
-  "originalUrl": "https://example.com/very-long-url",
-  "redirectCount": 42,
-  "createdAt": 1640995200000,
-  "lastAccessed": 1640995300000
-}
-```
-
-#### Search URLs by Descriptions
-**GET** `/api/urls/search`
-
-Search for URLs by their descriptions (case-insensitive).
-
-**Query Parameters:**
-- `q` (required): Search query to match against notes
-
-**Response:**
-```json
-{
-  "urls": [
-    {
-      "originalUrl": "https://example.com/very-long-url",
-      "shortCode": "abc123",
-      "description": "This is a test URL with a description",
-      "createdAt": 1640995200000,
-      "redirectCount": 42,
-      "lastAccessed": 1640995300000
-    }
-  ],
-  "query": "test",
-  "total": 1
-}
-```
-
-#### Redirect
+### 重定向
 **GET** `/{shortCode}`
 
-Redirects to the original URL.
+## 🎨 Web 界面
 
-**Response:**
-- **302 Redirect** to the original URL
-- **404 Not Found** if the short code doesn't exist
+访问根路径即可使用 Web 界面:
+- 创建短链接
+- 查看最近链接
+- 搜索历史记录
+- 查看访问统计
 
-## 🎨 Web Interface
+## 🔧 配置
 
-The service includes a beautiful, responsive web interface accessible at the root URL. Features include:
-
-### Main Page (`/`)
-- **URL Shortening**: Create short URLs with optional notes
-- **Recent URLs**: View the last 10 URLs with notes and statistics
-- **Password Protection**: Secure access with password authentication
-
-### History Page (`/history`)
-- **Complete History**: View all created URLs
-- **Search Functionality**: Search through URLs by their descriptions
-- **Responsive Design**: Works on desktop and mobile devices
-- **Sorting**: URLs are sorted by creation date (most recent first)
-
-- **Simple URL Input**: Just paste your long URL and get a short one
-- **Descriptions**: Add descriptions to remember what each link is for (required)
-- **Copy to Clipboard**: One-click copying of generated URLs
-- **Recent URLs**: View the last 10 URLs with notes and statistics
-- **Full History**: Access complete URL history with search functionality
-- **Error Handling**: Clear error messages for invalid inputs
-- **Mobile Responsive**: Works perfectly on all devices
-
-## 🔧 Configuration
-
-### Environment Variables
-
-The service uses Cloudflare KV for storage. No additional environment variables are required.
-
-### Customization
-
-You can customize the service by modifying:
-
-- **Short Code Generation**: Edit the `generateShortCode()` function in `src/index.ts`
-- **UI Styling**: Modify the CSS in the `serveMainPage()` function
-- **Validation Rules**: Update URL validation and note length rules
-- **CORS Settings**: Modify CORS headers in the API functions
-
-## 📊 Data Structure
-
-URLs are stored in Cloudflare KV with the following structure:
+### 数据结构
 
 ```typescript
 interface UrlRecord {
-  originalUrl: string;      // The original long URL
-  shortCode: string;        // The short code (KV key)
-  createdAt: number;        // Creation timestamp
-  redirectCount: number;    // Number of redirects
-  lastAccessed?: number;    // Last access timestamp
+  originalUrl: string;      // 原始链接
+  shortCode: string;        // 短码
+  description: string;      // 描述
+  createdAt: number;        // 创建时间
+  redirectCount: number;    // 重定向次数
+  lastAccessed?: number;    // 最后访问时间
 }
 ```
 
-## 🚀 Deployment
+### 自定义配置
 
-### Production Deployment
+- **短码生成**: 修改 `generateShortCode()` 函数
+- **界面样式**: 修改 `serveMainPage()` 中的 CSS
+- **验证规则**: 更新 URL 验证和描述长度规则
 
-1. **Build and deploy:**
-   ```bash
-   npm run deploy
-   ```
+## 📝 许可证
 
-2. **Set up custom domain (optional):**
-   ```bash
-   npx wrangler domain add your-domain.com
-   ```
+MIT License
 
-### Environment Management
+## 🆘 支持
 
-- **Production**: Uses production KV namespace
-- **Preview**: Uses preview KV namespace for testing
-- **Local Development**: Uses local KV simulation
-
-## 🔒 Security Considerations
-
-- **Input Validation**: All URLs are validated before processing
-- **Custom Code Sanitization**: Custom codes are sanitized to prevent injection
-- **Rate Limiting**: Consider implementing rate limiting for production use
-- **HTTPS Only**: All requests should use HTTPS in production
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests for new functionality
-5. Submit a pull request
-
-## 📝 License
-
-This project is licensed under the MIT License.
-
-## 🆘 Support
-
-If you encounter any issues:
-
-1. Check the [Cloudflare Workers documentation](https://developers.cloudflare.com/workers/)
-2. Review the test suite for usage examples
-3. Open an issue on GitHub
-
-## 🎯 Roadmap
-
-- [ ] Rate limiting
-- [ ] URL expiration dates
-- [ ] Password protection for URLs
-- [ ] QR code generation
-- [ ] Advanced analytics dashboard
-- [ ] Bulk URL import/export
-- [ ] API authentication
-- [ ] URL categories/tags 
-
-## 🎨 **Summary of Embedding Options:**
-
-### **1. Iframe Embedding** (`embed-example.html`)
-- ✅ **Pros**: Full app with password protection and recent URLs
-- ✅ **Pros**: No need to modify your existing site design
-- ❌ **Cons**: Limited customization, separate scroll context
-
-### **2. API Integration** (`api-integration-example.html`)
-- ✅ **Pros**: Full control over design and user experience
-- ✅ **Pros**: Seamless integration with your site
-- ✅ **Pros**: Can customize features and styling
-- ❌ **Cons**: Need to implement password protection yourself if needed
-
-### **3. Simple Widget** (`simple-widget.html`)
-- ✅ **Pros**: Minimal, lightweight integration
-- ✅ **Pros**: Easy to add to any website
-- ✅ **Pros**: Customizable styling
-- ❌ **Cons**: Basic functionality only
-
-## 🎨 **Quick Embed Code:**
-
-For the simplest embed, just add this to your HTML:
-
-```html
-<iframe 
-    src="https://short.g-zhanyu.workers.dev" 
-    width="100%" 
-    height="600px" 
-    style="border: none; border-radius: 8px;">
-</iframe>
-```
-
-## 🔧 **API Endpoints for Custom Integration:**
-
-- **Create URL**: `POST https://short.g-zhanyu.workers.dev/api/urls`
-- **List URLs**: `GET https://short.g-zhanyu.workers.dev/api/urls`
-- **Get Stats**: `GET https://short.g-zhanyu.workers.dev/api/urls/stats/{shortCode}`
-
-**Which embedding approach would you prefer?** I can help you customize any of these options for your specific needs! 
+如遇问题请查看:
+1. [Cloudflare Workers 文档](https://developers.cloudflare.com/workers/)
+2. 项目测试用例
+3. GitHub Issues
