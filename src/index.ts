@@ -19,6 +19,7 @@ interface UrlRecord {
   createdAt: number;
   redirectCount: number;
   lastAccessed?: number;
+  expiresAt?: number; // 过期时间戳，undefined表示永久
 }
 
 interface Env {
@@ -104,7 +105,7 @@ async function handleApiRequest(request: Request, env: Env, endpoint: string): P
 
 async function createShortUrl(request: Request, env: Env, corsHeaders: Record<string, string>): Promise<Response> {
   try {
-    const body = await request.json() as { url: string; description: string };
+    const body = await request.json() as { url: string; description: string; expirationType?: string };
     
     if (!body.url) {
       return new Response(JSON.stringify({ error: 'URL is required' }), {
@@ -142,6 +143,13 @@ async function createShortUrl(request: Request, env: Env, corsHeaders: Record<st
       attempts++;
     }
 
+    // 计算过期时间
+    let expiresAt: number | undefined;
+    if (body.expirationType === '30days') {
+      expiresAt = Date.now() + (30 * 24 * 60 * 60 * 1000); // 30天后过期
+    }
+    // 如果是 'permanent' 或未指定，则 expiresAt 保持 undefined（永久）
+
     // Create URL record
     const urlRecord: UrlRecord = {
       originalUrl,
@@ -149,6 +157,7 @@ async function createShortUrl(request: Request, env: Env, corsHeaders: Record<st
       description: body.description.trim(),
       createdAt: Date.now(),
       redirectCount: 0,
+      expiresAt,
     };
 
     // Store in KV
@@ -304,6 +313,13 @@ async function handleRedirect(request: Request, env: Env, shortCode: string): Pr
 
     const urlRecord: UrlRecord = JSON.parse(value);
     
+    // 检查链接是否过期
+    if (urlRecord.expiresAt && Date.now() > urlRecord.expiresAt) {
+      // 删除过期的链接
+      await env.URLS.delete(shortCode);
+      return new Response('URL has expired', { status: 410 }); // 410 Gone
+    }
+    
     // Update redirect count and last accessed time
     urlRecord.redirectCount++;
     urlRecord.lastAccessed = Date.now();
@@ -368,9 +384,9 @@ async function serveMainPage(request: Request): Promise<Response> {
         
         /* Layout */
         .app-container {
-            max-width: 1200px;
+            max-width: 1000px;
             margin: 0 auto;
-            padding: 24px;
+            padding: 16px;
             min-height: 100vh;
             display: flex;
             flex-direction: column;
@@ -416,7 +432,7 @@ async function serveMainPage(request: Request): Promise<Response> {
         
         /* Form Elements */
         .form-group {
-            margin-bottom: 24px;
+            margin-bottom: 16px;
         }
         
         .form-label {
@@ -424,23 +440,23 @@ async function serveMainPage(request: Request): Promise<Response> {
             color: #202124;
             font-size: 14px;
             font-weight: 500;
-            margin-bottom: 8px;
+            margin-bottom: 6px;
             letter-spacing: 0.25px;
         }
         
-        .form-input {
+        .form-input, .form-select {
             width: 100%;
-            padding: 16px;
+            padding: 12px;
             border: 1px solid #dadce0;
-            border-radius: 8px;
-            font-size: 16px;
+            border-radius: 6px;
+            font-size: 14px;
             font-family: 'Roboto', sans-serif;
             background: white;
             transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
             color: #202124;
         }
         
-        .form-input:focus {
+        .form-input:focus, .form-select:focus {
             outline: none;
             border-color: #1a73e8;
             box-shadow: 0 0 0 2px rgba(26, 115, 232, 0.2);
@@ -455,9 +471,9 @@ async function serveMainPage(request: Request): Promise<Response> {
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            padding: 12px 24px;
+            padding: 10px 20px;
             border: none;
-            border-radius: 8px;
+            border-radius: 6px;
             font-family: 'Roboto', sans-serif;
             font-size: 14px;
             font-weight: 500;
@@ -465,7 +481,7 @@ async function serveMainPage(request: Request): Promise<Response> {
             cursor: pointer;
             transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
             letter-spacing: 0.25px;
-            min-height: 40px;
+            min-height: 36px;
         }
         
         .btn:focus {
@@ -526,23 +542,23 @@ async function serveMainPage(request: Request): Promise<Response> {
         
         .app-header {
             background: white;
-            border-radius: 12px;
-            padding: 32px;
-            margin-bottom: 24px;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 16px;
             text-align: center;
         }
         
         .app-header h1 {
             color: #202124;
-            font-size: 32px;
+            font-size: 28px;
             font-weight: 400;
-            margin: 0 0 8px 0;
+            margin: 0 0 6px 0;
             letter-spacing: 0.25px;
         }
         
         .app-header p {
             color: #5f6368;
-            font-size: 16px;
+            font-size: 14px;
             margin: 0;
             font-weight: 400;
         }
@@ -550,25 +566,25 @@ async function serveMainPage(request: Request): Promise<Response> {
         /* URL Form Card */
         .url-form-card {
             background: white;
-            border-radius: 12px;
-            padding: 32px;
-            margin-bottom: 24px;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 16px;
         }
         
         .url-form-card h2 {
             color: #202124;
-            font-size: 20px;
+            font-size: 18px;
             font-weight: 500;
-            margin: 0 0 24px 0;
+            margin: 0 0 16px 0;
             letter-spacing: 0.15px;
         }
         
         /* Result Card */
         .result-card {
             background: white;
-            border-radius: 12px;
-            padding: 24px;
-            margin-top: 24px;
+            border-radius: 8px;
+            padding: 16px;
+            margin-top: 16px;
             display: none;
             border-left: 4px solid #137333;
         }
@@ -620,22 +636,22 @@ async function serveMainPage(request: Request): Promise<Response> {
         /* Recent URLs Section */
         .urls-section {
             background: white;
-            border-radius: 12px;
-            padding: 32px;
+            border-radius: 8px;
+            padding: 20px;
         }
         
         .urls-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 24px;
+            margin-bottom: 16px;
             flex-wrap: wrap;
-            gap: 16px;
+            gap: 12px;
         }
         
         .urls-header h2 {
             color: #202124;
-            font-size: 20px;
+            font-size: 18px;
             font-weight: 500;
             margin: 0;
             letter-spacing: 0.15px;
@@ -649,15 +665,15 @@ async function serveMainPage(request: Request): Promise<Response> {
         .url-list {
             display: flex;
             flex-direction: column;
-            gap: 16px;
-            max-height: 500px;
+            gap: 12px;
+            max-height: 400px;
             overflow-y: auto;
         }
         
         .url-item {
             background: #f8f9fa;
-            border-radius: 8px;
-            padding: 20px;
+            border-radius: 6px;
+            padding: 14px;
             border: 1px solid #e8eaed;
             transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
         }
@@ -670,30 +686,30 @@ async function serveMainPage(request: Request): Promise<Response> {
         .url-description {
             color: #202124;
             font-weight: 500;
-            font-size: 16px;
-            margin-bottom: 12px;
+            font-size: 15px;
+            margin-bottom: 8px;
             letter-spacing: 0.15px;
         }
         
         .url-original {
             color: #5f6368;
-            font-size: 14px;
-            margin-bottom: 8px;
+            font-size: 13px;
+            margin-bottom: 6px;
             word-break: break-all;
             font-weight: 400;
         }
         
         .url-short {
             color: #1a73e8;
-            font-size: 14px;
-            margin-bottom: 12px;
+            font-size: 13px;
+            margin-bottom: 8px;
             font-weight: 500;
         }
         
         .url-meta {
             color: #9aa0a6;
-            font-size: 12px;
-            margin-bottom: 8px;
+            font-size: 11px;
+            margin-bottom: 6px;
             font-weight: 400;
         }
         
@@ -796,7 +812,6 @@ async function serveMainPage(request: Request): Promise<Response> {
     <div id="passwordScreen" class="password-screen">
         <div class="password-card elevation-2">
             <h1>URL Shortener</h1>
-            <p>Please enter the password to access the URL shortener</p>
             <form id="passwordForm">
                 <div class="form-group">
                     <label for="password" class="form-label">Password</label>
@@ -813,7 +828,6 @@ async function serveMainPage(request: Request): Promise<Response> {
             <div class="app-container">
                 <div class="app-header elevation-1">
                     <h1>URL Shortener</h1>
-                    <p>Create short, memorable links for your content</p>
                 </div>
                 
                 <div class="url-form-card elevation-1">
@@ -827,6 +841,14 @@ async function serveMainPage(request: Request): Promise<Response> {
                         <div class="form-group">
                             <label for="description" class="form-label">Description</label>
                             <input type="text" id="description" name="description" class="form-input" placeholder="Describe what this link is for..." maxlength="100" required>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="expirationType" class="form-label">Expiration</label>
+                            <select id="expirationType" name="expirationType" class="form-select">
+                                <option value="permanent">Permanent</option>
+                                <option value="30days">30 days</option>
+                            </select>
                         </div>
                         
                         <button type="submit" class="btn btn-primary btn-full">Create Short URL</button>
@@ -894,6 +916,7 @@ async function serveMainPage(request: Request): Promise<Response> {
             
             const originalUrl = document.getElementById('originalUrl').value;
             const description = document.getElementById('description').value;
+            const expirationType = document.getElementById('expirationType').value;
             const errorDiv = document.getElementById('error');
             const resultDiv = document.getElementById('result');
             
@@ -909,7 +932,8 @@ async function serveMainPage(request: Request): Promise<Response> {
                     },
                     body: JSON.stringify({
                         url: originalUrl,
-                        description: description
+                        description: description,
+                        expirationType: expirationType
                     })
                 });
                 
@@ -982,6 +1006,23 @@ async function serveMainPage(request: Request): Promise<Response> {
                         const lastAccessed = url.lastAccessed ? new Date(url.lastAccessed).toLocaleString() : 'Never';
                         const shortUrl = window.location.origin + '/' + url.shortCode;
                         
+                        // 计算过期状态
+                        let expirationInfo = '';
+                        if (url.expiresAt) {
+                            const expiresAt = new Date(url.expiresAt);
+                            const now = new Date();
+                            const isExpired = now > expiresAt;
+                            const expiresText = expiresAt.toLocaleString();
+                            
+                            if (isExpired) {
+                                expirationInfo = \`<span class="stat-chip" style="background: #fce8e6; color: #d93025;">已过期</span>\`;
+                            } else {
+                                expirationInfo = \`<span class="stat-chip warning">过期: \${expiresText}</span>\`;
+                            }
+                        } else {
+                            expirationInfo = \`<span class="stat-chip success">永久有效</span>\`;
+                        }
+                        
                         return \`
                             <div class="url-item elevation-1">
                                 <div class="url-description">\${url.description}</div>
@@ -991,6 +1032,7 @@ async function serveMainPage(request: Request): Promise<Response> {
                                 <div class="url-stats">
                                     <span class="stat-chip">\${url.redirectCount} redirects</span>
                                     <span class="stat-chip warning">Last: \${lastAccessed}</span>
+                                    \${expirationInfo}
                                 </div>
                             </div>
                         \`;
