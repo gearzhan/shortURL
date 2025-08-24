@@ -692,6 +692,7 @@ async function serveMainPage(request: Request): Promise<Response> {
         }
         
         .url-original {
+            display: none;
             color: #5f6368;
             font-size: 13px;
             margin-bottom: 6px;
@@ -840,7 +841,7 @@ async function serveMainPage(request: Request): Promise<Response> {
                         
                         <div class="form-group">
                             <label for="description" class="form-label">Description</label>
-                            <input type="text" id="description" name="description" class="form-input" placeholder="Describe what this link is for..." maxlength="100" required>
+                            <input type="text" id="description" name="description" class="form-input" placeholder="[Project]-[Date of Issue]_[Description]" maxlength="100" required>
                         </div>
                         
                         <div class="form-group">
@@ -1275,6 +1276,7 @@ async function serveHistoryPage(request: Request): Promise<Response> {
         }
         
         .url-original {
+            display: none;
             color: #5f6368;
             font-size: 14px;
             margin-bottom: 8px;
