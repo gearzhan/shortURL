@@ -435,6 +435,24 @@ async function serveMainPage(request: Request): Promise<Response> {
             margin-bottom: 16px;
         }
         
+        .form-row {
+            display: flex;
+            gap: 16px;
+            margin-bottom: 16px;
+        }
+        
+        .form-group-description {
+            flex: 2;
+        }
+        
+        .form-group-expiration {
+            flex: 1;
+        }
+        
+        .form-row .form-group {
+            margin-bottom: 0;
+        }
+        
         .form-label {
             display: block;
             color: #202124;
@@ -666,7 +684,7 @@ async function serveMainPage(request: Request): Promise<Response> {
             display: flex;
             flex-direction: column;
             gap: 12px;
-            max-height: 400px;
+            max-height: 800px;
             overflow-y: auto;
         }
         
@@ -683,12 +701,27 @@ async function serveMainPage(request: Request): Promise<Response> {
             transform: translateY(-1px);
         }
         
+        .url-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid #e8eaed;
+        }
+        
         .url-description {
             color: #202124;
             font-weight: 500;
             font-size: 15px;
-            margin-bottom: 8px;
             letter-spacing: 0.15px;
+        }
+        
+        .url-date {
+            color: #9aa0a6;
+            font-size: 12px;
+            font-weight: 400;
+            text-align: right;
         }
         
         .url-original {
@@ -755,6 +788,14 @@ async function serveMainPage(request: Request): Promise<Response> {
         
         /* Responsive Design */
         @media (max-width: 768px) {
+            .form-row {
+                flex-direction: column;
+                gap: 0;
+            }
+            
+            .form-row .form-group {
+                margin-bottom: 16px;
+            }
             .app-container {
                 padding: 16px;
             }
@@ -839,17 +880,19 @@ async function serveMainPage(request: Request): Promise<Response> {
                             <input type="url" id="originalUrl" name="originalUrl" class="form-input" placeholder="https://example.com/very-long-url" required>
                         </div>
                         
-                        <div class="form-group">
-                            <label for="description" class="form-label">Description</label>
-                            <input type="text" id="description" name="description" class="form-input" placeholder="[Project]-[Date of Issue]_[Description]" maxlength="100" required>
-                        </div>
-                        
-                        <div class="form-group">
-                            <label for="expirationType" class="form-label">Expiration</label>
-                            <select id="expirationType" name="expirationType" class="form-select">
-                                <option value="permanent">Permanent</option>
-                                <option value="30days">30 days</option>
-                            </select>
+                        <div class="form-row">
+                            <div class="form-group form-group-description">
+                                <label for="description" class="form-label">Description</label>
+                                <input type="text" id="description" name="description" class="form-input" placeholder="[Project]-[Date of Issue]_[Description]" maxlength="100" required>
+                            </div>
+                            
+                            <div class="form-group form-group-expiration">
+                                <label for="expirationType" class="form-label">Expiration</label>
+                                <select id="expirationType" name="expirationType" class="form-select">
+                                    <option value="permanent">Permanent</option>
+                                    <option value="30days">30 days</option>
+                                </select>
+                            </div>
                         </div>
                         
                         <button type="submit" class="btn btn-primary btn-full">Create Short URL</button>
@@ -1026,10 +1069,12 @@ async function serveMainPage(request: Request): Promise<Response> {
                         
                         return \`
                             <div class="url-item elevation-1">
-                                <div class="url-description">\${url.description}</div>
+                                <div class="url-header">
+                                    <span class="url-description">\${url.description}</span>
+                                    <span class="url-date">\${createdAt}</span>
+                                </div>
                                 <div class="url-original">\${url.originalUrl}</div>
                                 <div class="url-short">\${shortUrl}</div>
-                                <div class="url-meta">Created: \${createdAt}</div>
                                 <div class="url-stats">
                                     <span class="stat-chip">\${url.redirectCount} redirects</span>
                                     <span class="stat-chip warning">Last: \${lastAccessed}</span>
@@ -1230,7 +1275,7 @@ async function serveHistoryPage(request: Request): Promise<Response> {
             background: white;
             border-radius: 12px;
             padding: 32px;
-            max-height: 600px;
+            max-height: 850px;
             overflow-y: auto;
         }
         
@@ -1273,6 +1318,7 @@ async function serveHistoryPage(request: Request): Promise<Response> {
             color: #9aa0a6;
             font-size: 14px;
             font-weight: 400;
+            text-align: right;
         }
         
         .url-original {
@@ -1526,6 +1572,23 @@ async function serveHistoryPage(request: Request): Promise<Response> {
                        const lastAccessed = url.lastAccessed ? new Date(url.lastAccessed).toLocaleString() : 'Never';
                        const shortUrl = window.location.origin + '/' + url.shortCode;
                        
+                       // 计算过期状态
+                       let expirationInfo = '';
+                       if (url.expiresAt) {
+                           const expiresAt = new Date(url.expiresAt);
+                           const now = new Date();
+                           const isExpired = now > expiresAt;
+                           const expiresText = expiresAt.toLocaleString();
+                           
+                           if (isExpired) {
+                               expirationInfo = \`<span class="stat-chip" style="background: #fce8e6; color: #d93025;">Expired</span>\`;
+                           } else {
+                               expirationInfo = \`<span class="stat-chip warning">Expires: \${expiresText}</span>\`;
+                           }
+                       } else {
+                           expirationInfo = \`<span class="stat-chip success">Permanent</span>\`;
+                       }
+                       
                        return \`
                            <div class="url-item elevation-1">
                                <div class="url-header">
@@ -1535,8 +1598,9 @@ async function serveHistoryPage(request: Request): Promise<Response> {
                                <div class="url-original">\${url.originalUrl}</div>
                                <div class="url-short">\${shortUrl}</div>
                                <div class="url-stats">
-                                   <span class="stat-chip warning">Last: \${lastAccessed}</span>
                                    <span class="stat-chip">\${url.redirectCount} redirects</span>
+                                   <span class="stat-chip warning">Last: \${lastAccessed}</span>
+                                   \${expirationInfo}
                                </div>
                            </div>
                        \`;
