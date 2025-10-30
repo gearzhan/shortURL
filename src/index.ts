@@ -20,6 +20,7 @@ interface UrlRecord {
   redirectCount: number;
   lastAccessed?: number;
   expiresAt?: number; // Unix timestamp in milliseconds; undefined means the record does not expire.
+  locked?: boolean; // When true, the record is protected from deletion until unlocked.
 }
 
 interface Env {
@@ -82,6 +83,20 @@ async function handleApiRequest(request: Request, env: Env, endpoint: string): P
         return await createShortUrl(request, env, corsHeaders);
       } else if (request.method === 'GET') {
         return await listUrls(request, env, corsHeaders);
+      } else if (request.method === 'DELETE') {
+        return await deleteShortUrl(request, env, corsHeaders);
+      }
+      break;
+
+    case 'urls/bulk-delete':
+      if (request.method === 'POST') {
+        return await bulkDeleteUrls(request, env, corsHeaders);
+      }
+      break;
+
+    case 'urls/lock':
+      if (request.method === 'POST' || request.method === 'PUT' || request.method === 'PATCH') {
+        return await updateLockState(request, env, corsHeaders);
       }
       break;
 
@@ -152,6 +167,7 @@ async function createShortUrl(request: Request, env: Env, corsHeaders: Record<st
       createdAt: Date.now(),
       redirectCount: 0,
       expiresAt,
+      locked: false,
     };
 
     await resetRedirectMetrics(env, shortCode);
@@ -205,6 +221,7 @@ async function listUrls(request: Request, env: Env, corsHeaders: Record<string, 
       }
 
       const record = JSON.parse(value) as UrlRecord;
+      record.locked = Boolean(record.locked);
 
       if (record.expiresAt && Date.now() > record.expiresAt) {
         continue;
@@ -232,6 +249,201 @@ async function listUrls(request: Request, env: Env, corsHeaders: Record<string, 
 }
 
 
+
+async function deleteShortUrl(request: Request, env: Env, corsHeaders: Record<string, string>): Promise<Response> {
+  try {
+    const url = new URL(request.url);
+    const shortCode = url.searchParams.get('code');
+
+    if (!shortCode) {
+      return new Response(JSON.stringify({ error: 'Short code is required' }), {
+        status: 400,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
+    const value = await env.URLS.get(shortCode);
+    if (!value) {
+      return new Response(JSON.stringify({ error: 'URL not found' }), {
+        status: 404,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
+    const record: UrlRecord = JSON.parse(value);
+    if (record.locked) {
+      return new Response(JSON.stringify({ error: 'Record is locked' }), {
+        status: 423,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
+    await env.URLS.delete(shortCode);
+    await resetRedirectMetrics(env, shortCode);
+
+    return new Response(null, {
+      status: 204,
+      headers: corsHeaders,
+    });
+  } catch (error) {
+    console.error('Error deleting URL:', error);
+    return new Response(JSON.stringify({ error: 'Failed to delete URL' }), {
+      status: 500,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  }
+}
+
+async function bulkDeleteUrls(request: Request, env: Env, corsHeaders: Record<string, string>): Promise<Response> {
+  try {
+    let body: any = null;
+    try {
+      body = await request.json();
+    } catch {
+      body = {};
+    }
+
+    const jsonHeaders = { ...corsHeaders, 'Content-Type': 'application/json' } as Record<string, string>;
+    const codesInput = Array.isArray(body?.codes) ? body.codes : undefined;
+    const uniqueCodes = codesInput
+      ? Array.from(new Set(codesInput.map((code: unknown) => typeof code === 'string' ? code.trim() : '').filter((code) => code.length > 0)))
+      : undefined;
+
+    const result = { deleted: 0, skippedLocked: 0, notFound: 0 };
+
+    if (uniqueCodes && uniqueCodes.length > 0) {
+      for (const shortCode of uniqueCodes) {
+        const value = await env.URLS.get(shortCode);
+        if (!value) {
+          result.notFound++;
+          continue;
+        }
+
+        const record: UrlRecord = JSON.parse(value);
+        if (record.locked) {
+          result.skippedLocked++;
+          continue;
+        }
+
+        await env.URLS.delete(shortCode);
+        await resetRedirectMetrics(env, shortCode);
+        result.deleted++;
+      }
+
+      return new Response(JSON.stringify(result), {
+        status: 200,
+        headers: jsonHeaders,
+      });
+    }
+
+    const olderThanDays = typeof body?.olderThanDays === 'number' && body.olderThanDays > 0 ? body.olderThanDays : 120;
+    const cutoff = Date.now() - olderThanDays * 24 * 60 * 60 * 1000;
+
+    let cursor: string | undefined;
+    do {
+      const listResult = await env.URLS.list({ cursor, limit: 1000 });
+      cursor = listResult.cursor;
+
+      for (const key of listResult.keys) {
+        const value = await env.URLS.get(key.name);
+        if (!value) {
+          result.notFound++;
+          continue;
+        }
+
+        const record: UrlRecord = JSON.parse(value);
+        const createdAt = typeof record.createdAt === 'number' ? record.createdAt : 0;
+
+        if (createdAt >= cutoff) {
+          continue;
+        }
+
+        if (record.locked) {
+          result.skippedLocked++;
+          continue;
+        }
+
+        await env.URLS.delete(key.name);
+        await resetRedirectMetrics(env, key.name);
+        result.deleted++;
+      }
+
+      if (listResult.list_complete || !cursor) {
+        break;
+      }
+    } while (true);
+
+    return new Response(JSON.stringify(result), {
+      status: 200,
+      headers: jsonHeaders,
+    });
+  } catch (error) {
+    console.error('Error bulk deleting URLs:', error);
+    return new Response(JSON.stringify({ error: 'Failed to bulk delete URLs' }), {
+      status: 500,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  }
+}
+
+async function updateLockState(request: Request, env: Env, corsHeaders: Record<string, string>): Promise<Response> {
+  try {
+    let body: any;
+    try {
+      body = await request.json();
+    } catch {
+      body = {};
+    }
+
+    const shortCode = typeof body?.code === 'string' ? body.code.trim() : '';
+    if (!shortCode) {
+      return new Response(JSON.stringify({ error: 'Short code is required' }), {
+        status: 400,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
+    if (typeof body?.locked !== 'boolean') {
+      return new Response(JSON.stringify({ error: 'Locked flag must be a boolean' }), {
+        status: 400,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
+    const value = await env.URLS.get(shortCode);
+    if (!value) {
+      return new Response(JSON.stringify({ error: 'URL not found' }), {
+        status: 404,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
+    const record: UrlRecord = JSON.parse(value);
+    const currentLocked = Boolean(record.locked);
+    const nextLocked = body.locked as boolean;
+
+    if (currentLocked === nextLocked) {
+      return new Response(JSON.stringify({ shortCode, locked: currentLocked }), {
+        status: 200,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
+    record.locked = nextLocked;
+    await env.URLS.put(shortCode, JSON.stringify(record), getKvPutOptions(record));
+
+    return new Response(JSON.stringify({ shortCode, locked: nextLocked }), {
+      status: 200,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  } catch (error) {
+    console.error('Error updating lock state:', error);
+    return new Response(JSON.stringify({ error: 'Failed to update lock state' }), {
+      status: 500,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  }
+}
 
 async function searchUrls(request: Request, env: Env, corsHeaders: Record<string, string>): Promise<Response> {
   try {
@@ -265,6 +477,7 @@ async function searchUrls(request: Request, env: Env, corsHeaders: Record<string
         }
 
         const record = JSON.parse(value) as UrlRecord;
+        record.locked = Boolean(record.locked);
         if (record.expiresAt && Date.now() > record.expiresAt) {
           continue;
         }
@@ -340,6 +553,7 @@ async function getUrlStats(request: Request, env: Env, corsHeaders: Record<strin
       createdAt: urlRecord.createdAt,
       lastAccessed: urlRecord.lastAccessed ?? null,
       expiresAt: urlRecord.expiresAt ?? null,
+      locked: Boolean(urlRecord.locked),
     }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     });
@@ -808,8 +1022,16 @@ async function serveMainPage(request: Request): Promise<Response> {
             margin-bottom: 16px;
             padding-bottom: 12px;
             border-bottom: 1px solid #e8eaed;
+            gap: 12px;
         }
-        
+
+        .url-header-main {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
         .url-description {
             color: #202124;
             font-weight: 500;
@@ -852,7 +1074,14 @@ async function serveMainPage(request: Request): Promise<Response> {
             gap: 12px;
             flex-wrap: wrap;
         }
-        
+
+        .url-actions {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+            margin-top: 16px;
+        }
+
         .stat-chip {
             background: #e8f0fe;
             color: #1a73e8;
@@ -867,12 +1096,17 @@ async function serveMainPage(request: Request): Promise<Response> {
             background: #e6f4ea;
             color: #137333;
         }
-        
+
         .stat-chip.warning {
             background: #fef7e0;
             color: #b06000;
         }
-        
+
+        .stat-chip.danger {
+            background: #fce8e6;
+            color: #d93025;
+        }
+
         /* Empty States */
         .empty-state {
             text-align: center;
@@ -1349,7 +1583,71 @@ async function serveHistoryPage(request: Request): Promise<Response> {
             align-items: center;
             flex-wrap: wrap;
         }
-        
+
+        .bulk-actions {
+            background: white;
+            border-radius: 12px;
+            padding: 24px 32px;
+            margin-bottom: 24px;
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: space-between;
+            gap: 16px;
+            align-items: center;
+        }
+
+        .bulk-summary {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            color: #5f6368;
+            font-size: 14px;
+        }
+
+        .selection-count {
+            font-weight: 500;
+            color: #202124;
+        }
+
+        .bulk-tip {
+            font-size: 12px;
+        }
+
+        .bulk-buttons {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .btn[disabled] {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .action-feedback {
+            background: #e8f0fe;
+            border-radius: 12px;
+            padding: 16px 32px;
+            margin-bottom: 16px;
+            color: #1a73e8;
+            font-size: 14px;
+        }
+
+        .action-feedback.success {
+            background: #e6f4ea;
+            color: #137333;
+        }
+
+        .action-feedback.error {
+            background: #fce8e6;
+            color: #d93025;
+        }
+
+        .action-feedback.info {
+            background: #e8f0fe;
+            color: #1a73e8;
+        }
+
         .search-input {
             flex: 1;
             min-width: 300px;
@@ -1406,11 +1704,16 @@ async function serveHistoryPage(request: Request): Promise<Response> {
             background: #f1f3f4;
             transform: translateY(-1px);
         }
-        
+
+        .url-item.locked {
+            border-color: #fce8e6;
+            background: #fff7f7;
+        }
+
         .url-item:last-child {
             margin-bottom: 0;
         }
-        
+
         /* URL Header */
         .url-header {
             display: flex;
@@ -1596,7 +1899,20 @@ async function serveHistoryPage(request: Request): Promise<Response> {
                 <button type="button" class="btn btn-danger" onclick="clearSearch()">Clear</button>
             </form>
         </div>
-        
+
+        <div class="bulk-actions elevation-1">
+            <div class="bulk-summary">
+                <span class="selection-count" id="selectionCount">No records selected</span>
+                <span class="bulk-tip">Locked records stay safe until you unlock them.</span>
+            </div>
+            <div class="bulk-buttons">
+                <button type="button" class="btn btn-secondary" onclick="selectOlderThan120()">Select >120 days</button>
+                <button type="button" class="btn btn-secondary" onclick="clearSelection()">Clear selection</button>
+                <button type="button" class="btn btn-danger" id="deleteSelectedBtn" onclick="deleteSelected()" disabled>Delete selected</button>
+            </div>
+        </div>
+
+        <div id="actionFeedback" class="action-feedback" style="display: none;"></div>
         <div id="resultsInfo" class="results-info elevation-1"></div>
         <div id="error" class="error" style="display: none;"></div>
         
@@ -1608,13 +1924,24 @@ async function serveHistoryPage(request: Request): Promise<Response> {
     </div>
 
     <script>
+        const DAY_MS = 24 * 60 * 60 * 1000;
+        const BULK_THRESHOLD_DAYS = 120;
+
         let allUrls = [];
-        
-        // Load all URLs on page load
+        let currentQuery = '';
+        const selectedCodes = new Set();
+
+        const urlList = document.getElementById('urlList');
+        const resultsInfo = document.getElementById('resultsInfo');
+        const errorDiv = document.getElementById('error');
+        const selectionCountEl = document.getElementById('selectionCount');
+        const deleteSelectedBtn = document.getElementById('deleteSelectedBtn');
+        const actionFeedback = document.getElementById('actionFeedback');
+
         window.addEventListener('load', loadAllUrls);
-        
-        document.getElementById('searchForm').addEventListener('submit', function(e) {
-            e.preventDefault();
+
+        document.getElementById('searchForm').addEventListener('submit', (event) => {
+            event.preventDefault();
             const query = document.getElementById('searchInput').value.trim();
             if (query) {
                 searchUrls(query);
@@ -1622,116 +1949,347 @@ async function serveHistoryPage(request: Request): Promise<Response> {
                 loadAllUrls();
             }
         });
-        
-        async function loadAllUrls() {
-            const urlList = document.getElementById('urlList');
-            const resultsInfo = document.getElementById('resultsInfo');
-            const errorDiv = document.getElementById('error');
-            
-                               urlList.innerHTML = '<div class="loading"><p>Loading all URLs...</p></div>';
+
+        function showLoading(message) {
+            urlList.innerHTML = '<div class="loading"><p>' + message + '</p></div>';
+        }
+
+        function clearError() {
+            errorDiv.textContent = '';
             errorDiv.style.display = 'none';
-            
-            try {
-                const response = await fetch('/api/urls');
-                const data = await response.json();
-                
-                if (data.urls && data.urls.length > 0) {
-                    allUrls = data.urls;
-                    displayUrls(allUrls);
-                    resultsInfo.textContent = \`Showing all \${allUrls.length} URLs (sorted by most recent)\`;
-                                       } else {
-                           urlList.innerHTML = '<div class="empty-state"><p>No URLs found. Create your first short URL!</p></div>';
-                           resultsInfo.textContent = '';
-                       }
-            } catch (error) {
-                urlList.innerHTML = '';
-                errorDiv.textContent = 'Error loading URLs. Please try again.';
-                errorDiv.style.display = 'block';
-                resultsInfo.textContent = '';
+        }
+
+        function showError(message) {
+            errorDiv.textContent = message;
+            errorDiv.style.display = 'block';
+            hideFeedback();
+        }
+
+        function hideFeedback() {
+            if (!actionFeedback) {
+                return;
+            }
+            actionFeedback.style.display = 'none';
+            actionFeedback.className = 'action-feedback';
+            actionFeedback.textContent = '';
+        }
+
+        function showFeedback(message, type) {
+            if (!actionFeedback) {
+                return;
+            }
+            const variant = type || 'info';
+            actionFeedback.textContent = message;
+            actionFeedback.className = 'action-feedback ' + variant;
+            actionFeedback.style.display = 'block';
+        }
+
+        function updateSelectionUI() {
+            const count = selectedCodes.size;
+            if (selectionCountEl) {
+                selectionCountEl.textContent = count === 0
+                    ? 'No records selected'
+                    : count + ' record' + (count === 1 ? '' : 's') + ' selected';
+            }
+            if (deleteSelectedBtn) {
+                deleteSelectedBtn.disabled = count === 0;
             }
         }
-        
-        async function searchUrls(query) {
-            const urlList = document.getElementById('urlList');
-            const resultsInfo = document.getElementById('resultsInfo');
-            const errorDiv = document.getElementById('error');
-            
-                               urlList.innerHTML = '<div class="loading"><p>Searching...</p></div>';
-            errorDiv.style.display = 'none';
-            
+
+        function handleCheckboxChange(shortCode, checked) {
+            if (checked) {
+                selectedCodes.add(shortCode);
+            } else {
+                selectedCodes.delete(shortCode);
+            }
+            updateSelectionUI();
+        }
+
+        function selectOlderThan120() {
+            selectedCodes.clear();
+            const cutoff = Date.now() - BULK_THRESHOLD_DAYS * DAY_MS;
+            allUrls.forEach((url) => {
+                if (!url.locked && typeof url.createdAt === 'number' && url.createdAt < cutoff) {
+                    selectedCodes.add(url.shortCode);
+                }
+            });
+            displayUrls(allUrls);
+            if (selectedCodes.size > 0) {
+                showFeedback('Selected ' + selectedCodes.size + ' record' + (selectedCodes.size === 1 ? '' : 's') + ' older than ' + BULK_THRESHOLD_DAYS + ' days.', 'success');
+            } else {
+                showFeedback('No unlocked records older than ' + BULK_THRESHOLD_DAYS + ' days were found.', 'info');
+            }
+        }
+
+        function clearSelection() {
+            selectedCodes.clear();
+            displayUrls(allUrls);
+            showFeedback('Selection cleared.', 'info');
+        }
+
+        async function deleteSingle(shortCode) {
+            if (!confirm('Delete this short URL? This action cannot be undone.')) {
+                return;
+            }
+            clearError();
+            hideFeedback();
             try {
-                const response = await fetch(\`/api/urls/search?q=\${encodeURIComponent(query)}\`);
-                const data = await response.json();
-                
-                if (response.ok) {
-                    displayUrls(data.urls);
-                    resultsInfo.textContent = \`Found \${data.total} URLs matching "\${query}" in descriptions\`;
+                const response = await fetch('/api/urls?code=' + encodeURIComponent(shortCode), {
+                    method: 'DELETE'
+                });
+
+                if (response.status === 204) {
+                    selectedCodes.delete(shortCode);
+                    await refreshCurrentView();
+                    showFeedback('URL deleted successfully.', 'success');
+                    return;
+                }
+
+                let data = {};
+                try {
+                    data = await response.json();
+                } catch {
+                    data = {};
+                }
+
+                if (response.status === 423) {
+                    showError('This record is locked. Unlock it before deleting.');
                 } else {
-                    throw new Error(data.error || 'Search failed');
+                    showError(data.error || 'Failed to delete URL.');
                 }
             } catch (error) {
-                urlList.innerHTML = '';
-                errorDiv.textContent = \`Search error: \${error.message}\`;
-                errorDiv.style.display = 'block';
-                resultsInfo.textContent = '';
+                console.error(error);
+                showError('Failed to delete URL. Please try again.');
             }
         }
-        
-        function displayUrls(urls) {
-            const urlList = document.getElementById('urlList');
-            
-                               if (urls.length === 0) {
-                       urlList.innerHTML = '<div class="empty-state"><p>No URLs found matching your search.</p></div>';
-                       return;
-                   }
-            
-                               const urlsHtml = urls.map(url => {
-                       const createdAt = new Date(url.createdAt).toLocaleString();
-                       const lastAccessed = url.lastAccessed ? new Date(url.lastAccessed).toLocaleString() : 'Never';
-                       const shortUrl = window.location.origin + '/' + url.shortCode;
-                       
-                       // 计算过期状态
-                       let expirationInfo = '';
-                       if (url.expiresAt) {
-                           const expiresAt = new Date(url.expiresAt);
-                           const now = new Date();
-                           const isExpired = now > expiresAt;
-                           const expiresText = expiresAt.toLocaleString();
-                           
-                           if (isExpired) {
-                               expirationInfo = \`<span class="stat-chip" style="background: #fce8e6; color: #d93025;">Expired</span>\`;
-                           } else {
-                               expirationInfo = \`<span class="stat-chip warning">Expires: \${expiresText}</span>\`;
-                           }
-                       } else {
-                           expirationInfo = \`<span class="stat-chip success">Permanent</span>\`;
-                       }
-                       
-                       return \`
-                           <div class="url-item elevation-1">
-                               <div class="url-header">
-                                   <span class="url-description">\${url.description}</span>
-                                   <span class="url-date">\${createdAt}</span>
-                               </div>
-                               <div class="url-original">\${url.originalUrl}</div>
-                               <div class="url-short">\${shortUrl}</div>
-                               <div class="url-stats">
-                                   <span class="stat-chip">\${url.redirectCount} redirects</span>
-                                   <span class="stat-chip warning">Last: \${lastAccessed}</span>
-                                   \${expirationInfo}
-                               </div>
-                           </div>
-                       \`;
-                   }).join('');
-            
-            urlList.innerHTML = urlsHtml;
+
+        async function deleteSelected() {
+            if (selectedCodes.size === 0) {
+                return;
+            }
+
+            if (!confirm('Delete ' + selectedCodes.size + ' selected record' + (selectedCodes.size === 1 ? '' : 's') + '? This action cannot be undone.')) {
+                return;
+            }
+
+            clearError();
+            hideFeedback();
+
+            try {
+                const response = await fetch('/api/urls/bulk-delete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ codes: Array.from(selectedCodes) })
+                });
+                const data = await response.json().catch(() => ({}));
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Bulk delete failed');
+                }
+
+                selectedCodes.clear();
+                await refreshCurrentView();
+
+                const summary = [];
+                if (typeof data.deleted === 'number') {
+                    summary.push(data.deleted + ' deleted');
+                }
+                if (typeof data.skippedLocked === 'number' && data.skippedLocked > 0) {
+                    summary.push(data.skippedLocked + ' locked');
+                }
+                if (typeof data.notFound === 'number' && data.notFound > 0) {
+                    summary.push(data.notFound + ' missing');
+                }
+
+                const message = summary.length > 0
+                    ? 'Bulk delete complete: ' + summary.join(', ') + '.'
+                    : 'Bulk delete complete.';
+                showFeedback(message, 'success');
+            } catch (error) {
+                console.error(error);
+                showError(error.message || 'Bulk delete failed. Please try again.');
+            }
         }
-        
+
+        async function toggleLock(shortCode, shouldLock) {
+            clearError();
+            hideFeedback();
+
+            try {
+                const response = await fetch('/api/urls/lock', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ code: shortCode, locked: shouldLock })
+                });
+                const data = await response.json().catch(() => ({}));
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Failed to update lock state');
+                }
+
+                if (shouldLock) {
+                    selectedCodes.delete(shortCode);
+                }
+
+                await refreshCurrentView();
+                showFeedback(shouldLock ? 'Record locked.' : 'Record unlocked.', 'success');
+            } catch (error) {
+                console.error(error);
+                showError(error.message || 'Failed to update lock state.');
+            }
+        }
+
         function clearSearch() {
             document.getElementById('searchInput').value = '';
             loadAllUrls();
         }
-    </script>
+
+        async function refreshCurrentView() {
+            if (currentQuery) {
+                await searchUrls(currentQuery);
+            } else {
+                await loadAllUrls();
+            }
+        }
+
+        async function loadAllUrls() {
+            currentQuery = '';
+            clearError();
+            hideFeedback();
+            showLoading('Loading all URLs...');
+
+            try {
+                const response = await fetch('/api/urls');
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Failed to load URLs');
+                }
+
+                const urls = Array.isArray(data.urls) ? data.urls : [];
+                allUrls = urls;
+
+                if (urls.length === 0) {
+                    urlList.innerHTML = '<div class="empty-state"><p>No URLs found. Create your first short URL!</p></div>';
+                    resultsInfo.textContent = '';
+                    selectedCodes.clear();
+                    updateSelectionUI();
+                    return;
+                }
+
+                displayUrls(urls);
+                resultsInfo.textContent = 'Showing all ' + urls.length + ' URLs (sorted by most recent)';
+            } catch (error) {
+                console.error(error);
+                urlList.innerHTML = '';
+                showError('Error loading URLs. Please try again.');
+                resultsInfo.textContent = '';
+            }
+        }
+
+        async function searchUrls(query) {
+            currentQuery = query;
+            clearError();
+            hideFeedback();
+            showLoading('Searching...');
+
+            try {
+                const response = await fetch('/api/urls/search?q=' + encodeURIComponent(query));
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Search failed');
+                }
+
+                const urls = Array.isArray(data.urls) ? data.urls : [];
+                allUrls = urls;
+
+                if (urls.length === 0) {
+                    urlList.innerHTML = '<div class="empty-state"><p>No URLs found matching your search.</p></div>';
+                    resultsInfo.textContent = 'No URLs found matching "' + query + '".';
+                    selectedCodes.clear();
+                    updateSelectionUI();
+                    return;
+                }
+
+                displayUrls(urls);
+
+                let message = 'Found ' + (typeof data.total === 'number' ? data.total : urls.length) + ' URLs matching "' + query + '" in descriptions';
+                if (data.scanLimitHit) {
+                    message += ' (partial results)';
+                }
+                resultsInfo.textContent = message;
+            } catch (error) {
+                console.error(error);
+                urlList.innerHTML = '';
+                showError(error.message || 'Search error. Please try again.');
+                resultsInfo.textContent = '';
+            }
+        }
+
+        function displayUrls(urls) {
+            const availableCodes = new Set(urls.filter((url) => !url.locked).map((url) => url.shortCode));
+            Array.from(selectedCodes).forEach((code) => {
+                if (!availableCodes.has(code)) {
+                    selectedCodes.delete(code);
+                }
+            });
+
+            if (urls.length === 0) {
+                urlList.innerHTML = '<div class="empty-state"><p>No URLs found matching your search.</p></div>';
+                updateSelectionUI();
+                return;
+            }
+
+            const urlsHtml = urls.map((url) => {
+                const createdAt = new Date(url.createdAt).toLocaleString();
+                const lastAccessed = url.lastAccessed ? new Date(url.lastAccessed).toLocaleString() : 'Never';
+                const shortUrl = window.location.origin + '/' + url.shortCode;
+                const locked = Boolean(url.locked);
+
+                let expirationInfo = '<span class="stat-chip success">Permanent</span>';
+                if (url.expiresAt) {
+                    const expiresAtDate = new Date(url.expiresAt);
+                    const now = new Date();
+                    const expiresText = expiresAtDate.toLocaleString();
+                    expirationInfo = now > expiresAtDate
+                        ? '<span class="stat-chip danger">Expired</span>'
+                        : '<span class="stat-chip warning">Expires: ' + expiresText + '</span>';
+                }
+
+                return \`
+                    <div class="url-item elevation-1\${locked ? ' locked' : ''}">
+                        <div class="url-header">
+                            <div class="url-header-main">
+                                <input type="checkbox" class="record-checkbox" data-code="\${url.shortCode}" \${locked ? 'disabled' : ''} \${selectedCodes.has(url.shortCode) ? 'checked' : ''} onchange="handleCheckboxChange('\${url.shortCode}', this.checked)">
+                                <span class="url-description">\${url.description ? url.description : '(no description)'}</span>
+                                \${locked ? '<span class="stat-chip danger">Locked</span>' : ''}
+                            </div>
+                            <span class="url-date">\${createdAt}</span>
+                        </div>
+                        <div class="url-original">\${url.originalUrl}</div>
+                        <div class="url-short">\${shortUrl}</div>
+                        <div class="url-stats">
+                            <span class="stat-chip">\${url.redirectCount} redirects</span>
+                            <span class="stat-chip warning">Last: \${lastAccessed}</span>
+                            \${expirationInfo}
+                        </div>
+                        <div class="url-actions">
+                            <button class="btn btn-secondary" onclick="toggleLock('\${url.shortCode}', \${locked ? 'false' : 'true'})">
+                                \${locked ? 'Unlock' : 'Lock'}
+                            </button>
+                            <button class="btn btn-danger" onclick="deleteSingle('\${url.shortCode}')" \${locked ? 'disabled' : ''}>
+                                Delete
+                            </button>
+                        </div>
+                    </div>
+                \`;
+            }).join('');
+
+            urlList.innerHTML = urlsHtml;
+            updateSelectionUI();
+        }
+    </script></script>
 </body>
 </html>`;
 

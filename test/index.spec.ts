@@ -157,6 +157,134 @@ describe('URL Shortener Worker', () => {
     expect(response.headers.get('access-control-allow-methods')).toContain('POST');
   });
 
+  it('prevents deletion of locked URLs until unlocked', async () => {
+    const createRequest = new IncomingRequest('http://example.com/api/urls', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        url: 'https://example.com/lock-target',
+        description: 'Lock test'
+      })
+    });
+
+    const createCtx = createExecutionContext();
+    const createResponse = await worker.fetch(createRequest, env as any, createCtx);
+    await waitOnExecutionContext(createCtx);
+
+    expect(createResponse.status).toBe(201);
+    const created = await createResponse.json() as any;
+    const shortCode = created.shortCode as string;
+
+    const lockRequest = new IncomingRequest('http://example.com/api/urls/lock', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: shortCode, locked: true })
+    });
+    const lockCtx = createExecutionContext();
+    const lockResponse = await worker.fetch(lockRequest, env as any, lockCtx);
+    await waitOnExecutionContext(lockCtx);
+
+    expect(lockResponse.status).toBe(200);
+    const lockData = await lockResponse.json() as any;
+    expect(lockData.locked).toBe(true);
+
+    const deleteWhileLocked = new IncomingRequest(`http://example.com/api/urls?code=${shortCode}`, {
+      method: 'DELETE'
+    });
+    const deleteLockedCtx = createExecutionContext();
+    const deleteLockedResponse = await worker.fetch(deleteWhileLocked, env as any, deleteLockedCtx);
+    await waitOnExecutionContext(deleteLockedCtx);
+
+    expect(deleteLockedResponse.status).toBe(423);
+
+    const unlockRequest = new IncomingRequest('http://example.com/api/urls/lock', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: shortCode, locked: false })
+    });
+    const unlockCtx = createExecutionContext();
+    const unlockResponse = await worker.fetch(unlockRequest, env as any, unlockCtx);
+    await waitOnExecutionContext(unlockCtx);
+
+    expect(unlockResponse.status).toBe(200);
+    const unlockData = await unlockResponse.json() as any;
+    expect(unlockData.locked).toBe(false);
+
+    const deleteRequest = new IncomingRequest(`http://example.com/api/urls?code=${shortCode}`, {
+      method: 'DELETE'
+    });
+    const deleteCtx = createExecutionContext();
+    const deleteResponse = await worker.fetch(deleteRequest, env as any, deleteCtx);
+    await waitOnExecutionContext(deleteCtx);
+
+    expect(deleteResponse.status).toBe(204);
+
+    const stored = await env.URLS.get(shortCode);
+    expect(stored).toBeNull();
+  });
+
+  it('bulk deletes URLs older than the configured threshold while respecting locks', async () => {
+    const create = async (description: string) => {
+      const request = new IncomingRequest('http://example.com/api/urls', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: 'https://example.com/' + description.toLowerCase().replace(/\s+/g, '-'),
+          description
+        })
+      });
+      const ctx = createExecutionContext();
+      const response = await worker.fetch(request, env as any, ctx);
+      await waitOnExecutionContext(ctx);
+      expect(response.status).toBe(201);
+      return response.json() as Promise<any>;
+    };
+
+    const first = await create('Old unlocked record');
+    const second = await create('Old locked record');
+    const recent = await create('Recent record');
+
+    const dayMs = 24 * 60 * 60 * 1000;
+    const now = Date.now();
+
+    const firstRecord = JSON.parse((await env.URLS.get(first.shortCode))!);
+    firstRecord.createdAt = now - 130 * dayMs;
+    firstRecord.locked = false;
+    await env.URLS.put(first.shortCode, JSON.stringify(firstRecord));
+
+    const secondRecord = JSON.parse((await env.URLS.get(second.shortCode))!);
+    secondRecord.createdAt = now - 140 * dayMs;
+    secondRecord.locked = true;
+    await env.URLS.put(second.shortCode, JSON.stringify(secondRecord));
+
+    const recentRecord = JSON.parse((await env.URLS.get(recent.shortCode))!);
+    recentRecord.createdAt = now - 5 * dayMs;
+    recentRecord.locked = false;
+    await env.URLS.put(recent.shortCode, JSON.stringify(recentRecord));
+
+    const bulkRequest = new IncomingRequest('http://example.com/api/urls/bulk-delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ olderThanDays: 120 })
+    });
+    const bulkCtx = createExecutionContext();
+    const bulkResponse = await worker.fetch(bulkRequest, env as any, bulkCtx);
+    await waitOnExecutionContext(bulkCtx);
+
+    expect(bulkResponse.status).toBe(200);
+    const result = await bulkResponse.json() as any;
+    expect(result.deleted).toBeGreaterThanOrEqual(1);
+    expect(result.skippedLocked).toBeGreaterThanOrEqual(1);
+
+    const firstAfter = await env.URLS.get(first.shortCode);
+    const secondAfter = await env.URLS.get(second.shortCode);
+    const recentAfter = await env.URLS.get(recent.shortCode);
+
+    expect(firstAfter).toBeNull();
+    expect(secondAfter).not.toBeNull();
+    expect(recentAfter).not.toBeNull();
+  });
+
   it('serves the history page', async () => {
     const request = new IncomingRequest('http://example.com/history');
     const ctx = createExecutionContext();
