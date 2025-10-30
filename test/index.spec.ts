@@ -65,7 +65,7 @@ describe('URL Shortener Worker', () => {
     expect(data.createdAt).toBeTypeOf('number');
   });
 
-  it('rejects URLs without description', async () => {
+  it('allows URLs without description', async () => {
     const request = new IncomingRequest('http://example.com/api/urls', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -79,10 +79,10 @@ describe('URL Shortener Worker', () => {
     const response = await worker.fetch(request, env as any, ctx);
     await waitOnExecutionContext(ctx);
     
-    expect(response.status).toBe(400);
+    expect(response.status).toBe(201);
     
     const data = await response.json() as any;
-    expect(data.error).toBe('Description is required');
+    expect(data.description).toBe('');
   });
 
   it('rejects invalid URLs', async () => {
@@ -100,6 +100,42 @@ describe('URL Shortener Worker', () => {
     
     const data = await response.json() as any;
     expect(data.error).toBe('Invalid URL');
+  });
+
+  it('tracks redirect metrics using Durable Objects', async () => {
+    const createRequest = new IncomingRequest('http://example.com/api/urls', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        url: 'https://example.com/redirect-target',
+        description: 'Redirect metrics test'
+      })
+    });
+
+    const createCtx = createExecutionContext();
+    const createResponse = await worker.fetch(createRequest, env as any, createCtx);
+    await waitOnExecutionContext(createCtx);
+
+    expect(createResponse.status).toBe(201);
+    const created = await createResponse.json() as any;
+    const shortCode = created.shortCode as string;
+
+    const redirectRequest = new IncomingRequest(`http://example.com/${shortCode}`);
+    const redirectCtx = createExecutionContext();
+    const redirectResponse = await worker.fetch(redirectRequest, env as any, redirectCtx);
+    await waitOnExecutionContext(redirectCtx);
+
+    expect(redirectResponse.status).toBe(302);
+
+    const statsRequest = new IncomingRequest(`http://example.com/api/urls/stats?code=${shortCode}`);
+    const statsCtx = createExecutionContext();
+    const statsResponse = await worker.fetch(statsRequest, env as any, statsCtx);
+    await waitOnExecutionContext(statsCtx);
+
+    expect(statsResponse.status).toBe(200);
+    const stats = await statsResponse.json() as any;
+    expect(stats.redirectCount).toBeGreaterThanOrEqual(1);
+    expect(stats.lastAccessed).toBeTypeOf('number');
   });
 
   it('handles CORS preflight requests', async () => {

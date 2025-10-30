@@ -19,11 +19,12 @@ interface UrlRecord {
   createdAt: number;
   redirectCount: number;
   lastAccessed?: number;
-  expiresAt?: number; // 过期时间戳，undefined表示永久
+  expiresAt?: number; // Unix timestamp in milliseconds; undefined means the record does not expire.
 }
 
 interface Env {
   URLS: KVNamespace;
+  COUNTERS: DurableObjectNamespace;
 }
 
 export default {
@@ -56,7 +57,7 @@ export default {
 
       // Short URL redirect
       if (path && path.length > 0) {
-        return await handleRedirect(request, env, path);
+        return await handleRedirect(request, env, path, ctx);
       }
 
       // Serve the main page
@@ -103,19 +104,13 @@ async function handleApiRequest(request: Request, env: Env, endpoint: string): P
   });
 }
 
+
 async function createShortUrl(request: Request, env: Env, corsHeaders: Record<string, string>): Promise<Response> {
   try {
-    const body = await request.json() as { url: string; description: string; expirationType?: string };
-    
+    const body = await request.json() as { url: string; description?: string; expirationType?: string };
+
     if (!body.url) {
       return new Response(JSON.stringify({ error: 'URL is required' }), {
-        status: 400,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-      });
-    }
-
-    if (!body.description || body.description.trim() === '') {
-      return new Response(JSON.stringify({ error: 'Description is required' }), {
         status: 400,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       });
@@ -133,9 +128,11 @@ async function createShortUrl(request: Request, env: Env, corsHeaders: Record<st
       });
     }
 
+    const description = (body.description ?? '').trim();
+
     // Generate short code
     let shortCode = generateShortCode();
-    
+
     // Ensure uniqueness
     let attempts = 0;
     while (await env.URLS.get(shortCode) && attempts < 10) {
@@ -143,34 +140,32 @@ async function createShortUrl(request: Request, env: Env, corsHeaders: Record<st
       attempts++;
     }
 
-    // 计算过期时间
     let expiresAt: number | undefined;
     if (body.expirationType === '30days') {
-      expiresAt = Date.now() + (30 * 24 * 60 * 60 * 1000); // 30天后过期
+      expiresAt = Date.now() + (30 * 24 * 60 * 60 * 1000);
     }
-    // 如果是 'permanent' 或未指定，则 expiresAt 保持 undefined（永久）
 
-    // Create URL record
     const urlRecord: UrlRecord = {
       originalUrl,
       shortCode,
-      description: body.description.trim(),
+      description,
       createdAt: Date.now(),
       redirectCount: 0,
       expiresAt,
     };
 
-    // Store in KV
-    await env.URLS.put(shortCode, JSON.stringify(urlRecord));
+    await resetRedirectMetrics(env, shortCode);
+    await env.URLS.put(shortCode, JSON.stringify(urlRecord), getKvPutOptions(urlRecord));
 
     const shortUrl = `${new URL(request.url).origin}/${shortCode}`;
-    
+
     return new Response(JSON.stringify({
       shortUrl,
       originalUrl,
       shortCode,
       description: urlRecord.description,
       createdAt: urlRecord.createdAt,
+      expiresAt,
     }), {
       status: 201,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }
@@ -184,10 +179,20 @@ async function createShortUrl(request: Request, env: Env, corsHeaders: Record<st
   }
 }
 
+
+
 async function listUrls(request: Request, env: Env, corsHeaders: Record<string, string>): Promise<Response> {
   try {
     const url = new URL(request.url);
-    const limit = parseInt(url.searchParams.get('limit') || '50');
+    const rawLimit = url.searchParams.get('limit');
+    let limit = Number.parseInt(rawLimit ?? '', 10);
+
+    if (!Number.isInteger(limit) || limit <= 0) {
+      limit = 50;
+    }
+
+    limit = Math.min(limit, 1000);
+
     const cursor = url.searchParams.get('cursor') || undefined;
 
     const listResult = await env.URLS.list({ limit, cursor });
@@ -195,17 +200,24 @@ async function listUrls(request: Request, env: Env, corsHeaders: Record<string, 
 
     for (const key of listResult.keys) {
       const value = await env.URLS.get(key.name);
-      if (value) {
-        urls.push(JSON.parse(value));
+      if (!value) {
+        continue;
       }
+
+      const record = JSON.parse(value) as UrlRecord;
+
+      if (record.expiresAt && Date.now() > record.expiresAt) {
+        continue;
+      }
+
+      urls.push(record);
     }
 
-    // Sort URLs by creation date (recent to old)
     urls.sort((a, b) => b.createdAt - a.createdAt);
 
     return new Response(JSON.stringify({
       urls,
-      cursor: 'cursor' in listResult ? listResult.cursor : undefined,
+      cursor: listResult.list_complete ? undefined : listResult.cursor,
       listComplete: listResult.list_complete,
     }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }
@@ -219,11 +231,13 @@ async function listUrls(request: Request, env: Env, corsHeaders: Record<string, 
   }
 }
 
+
+
 async function searchUrls(request: Request, env: Env, corsHeaders: Record<string, string>): Promise<Response> {
   try {
     const url = new URL(request.url);
     const query = url.searchParams.get('q');
-    
+
     if (!query) {
       return new Response(JSON.stringify({ error: 'Search query is required' }), {
         status: 400,
@@ -231,27 +245,52 @@ async function searchUrls(request: Request, env: Env, corsHeaders: Record<string
       });
     }
 
-    const listResult = await env.URLS.list();
-    const urls: UrlRecord[] = [];
+    const listLimit = 1000;
+    const maxScan = 5000;
+    let scanned = 0;
+    let cursor: string | undefined;
+    let scanLimitHit = false;
+    const matches: UrlRecord[] = [];
+    const normalizedQuery = query.toLowerCase();
 
-    for (const key of listResult.keys) {
-      const value = await env.URLS.get(key.name);
-      if (value) {
-        const urlRecord: UrlRecord = JSON.parse(value);
-        // Search only in descriptions (case-insensitive)
-        if (urlRecord.description && urlRecord.description.toLowerCase().includes(query.toLowerCase())) {
-          urls.push(urlRecord);
+    do {
+      const listResult = await env.URLS.list({ cursor, limit: listLimit });
+      cursor = listResult.cursor;
+      scanned += listResult.keys.length;
+
+      for (const key of listResult.keys) {
+        const value = await env.URLS.get(key.name);
+        if (!value) {
+          continue;
+        }
+
+        const record = JSON.parse(value) as UrlRecord;
+        if (record.expiresAt && Date.now() > record.expiresAt) {
+          continue;
+        }
+
+        if (record.description && record.description.toLowerCase().includes(normalizedQuery)) {
+          matches.push(record);
         }
       }
-    }
 
-    // Sort by creation date (recent to old)
-    urls.sort((a, b) => b.createdAt - a.createdAt);
+      if (!listResult.list_complete && scanned >= maxScan) {
+        scanLimitHit = true;
+        break;
+      }
+
+      if (listResult.list_complete || !cursor) {
+        break;
+      }
+    } while (true);
+
+    matches.sort((a, b) => b.createdAt - a.createdAt);
 
     return new Response(JSON.stringify({
-      urls,
+      urls: matches,
       query,
-      total: urls.length,
+      total: matches.length,
+      scanLimitHit,
     }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     });
@@ -264,11 +303,13 @@ async function searchUrls(request: Request, env: Env, corsHeaders: Record<string
   }
 }
 
+
+
 async function getUrlStats(request: Request, env: Env, corsHeaders: Record<string, string>): Promise<Response> {
   try {
     const url = new URL(request.url);
     const shortCode = url.searchParams.get('code');
-    
+
     if (!shortCode) {
       return new Response(JSON.stringify({ error: 'Short code is required' }), {
         status: 400,
@@ -285,13 +326,20 @@ async function getUrlStats(request: Request, env: Env, corsHeaders: Record<strin
     }
 
     const urlRecord: UrlRecord = JSON.parse(value);
-    
+    const metrics = await fetchRedirectMetrics(env, shortCode);
+
+    if (metrics) {
+      urlRecord.redirectCount = metrics.redirectCount;
+      urlRecord.lastAccessed = metrics.lastAccessed;
+    }
+
     return new Response(JSON.stringify({
       shortCode: urlRecord.shortCode,
       originalUrl: urlRecord.originalUrl,
       redirectCount: urlRecord.redirectCount,
       createdAt: urlRecord.createdAt,
-      lastAccessed: urlRecord.lastAccessed,
+      lastAccessed: urlRecord.lastAccessed ?? null,
+      expiresAt: urlRecord.expiresAt ?? null,
     }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     });
@@ -304,7 +352,58 @@ async function getUrlStats(request: Request, env: Env, corsHeaders: Record<strin
   }
 }
 
-async function handleRedirect(request: Request, env: Env, shortCode: string): Promise<Response> {
+
+
+
+function getKvPutOptions(record: UrlRecord): KVNamespacePutOptions | undefined {
+  if (record.expiresAt) {
+    return { expiration: Math.floor(record.expiresAt / 1000) };
+  }
+  return undefined;
+}
+
+async function incrementRedirectMetrics(env: Env, shortCode: string): Promise<{ redirectCount: number; lastAccessed: number }> {
+  const id = env.COUNTERS.idFromName(shortCode);
+  const stub = env.COUNTERS.get(id);
+  const response = await stub.fetch('https://counter/increment', { method: 'POST' });
+
+  if (!response.ok) {
+    throw new Error(`Failed to increment redirect metrics (${response.status})`);
+  }
+
+  const data = await response.json() as { redirectCount: number; lastAccessed: number };
+  return data;
+}
+
+async function fetchRedirectMetrics(env: Env, shortCode: string): Promise<{ redirectCount: number; lastAccessed?: number } | null> {
+  const id = env.COUNTERS.idFromName(shortCode);
+  const stub = env.COUNTERS.get(id);
+  const response = await stub.fetch('https://counter/stats');
+
+  if (response.status === 404) {
+    return null;
+  }
+
+  if (!response.ok) {
+    console.warn(`Failed to fetch redirect metrics (${response.status})`);
+    return null;
+  }
+
+  const data = await response.json() as { redirectCount: number; lastAccessed?: number };
+  return data;
+}
+
+async function resetRedirectMetrics(env: Env, shortCode: string): Promise<void> {
+  const id = env.COUNTERS.idFromName(shortCode);
+  const stub = env.COUNTERS.get(id);
+  const response = await stub.fetch('https://counter/reset', { method: 'POST' });
+
+  if (!response.ok && response.status !== 404) {
+    console.warn(`Failed to reset redirect metrics (${response.status})`);
+  }
+}
+
+async function handleRedirect(request: Request, env: Env, shortCode: string, ctx: ExecutionContext): Promise<Response> {
   try {
     const value = await env.URLS.get(shortCode);
     if (!value) {
@@ -312,20 +411,20 @@ async function handleRedirect(request: Request, env: Env, shortCode: string): Pr
     }
 
     const urlRecord: UrlRecord = JSON.parse(value);
-    
-    // 检查链接是否过期
-    if (urlRecord.expiresAt && Date.now() > urlRecord.expiresAt) {
-      // 删除过期的链接
-      await env.URLS.delete(shortCode);
-      return new Response('URL has expired', { status: 410 }); // 410 Gone
-    }
-    
-    // Update redirect count and last accessed time
-    urlRecord.redirectCount++;
-    urlRecord.lastAccessed = Date.now();
-    await env.URLS.put(shortCode, JSON.stringify(urlRecord));
 
-    // Redirect to original URL
+    if (urlRecord.expiresAt && Date.now() > urlRecord.expiresAt) {
+      await env.URLS.delete(shortCode);
+      ctx.waitUntil(resetRedirectMetrics(env, shortCode));
+      return new Response('URL has expired', { status: 410 });
+    }
+
+    const metrics = await incrementRedirectMetrics(env, shortCode);
+    urlRecord.redirectCount = metrics.redirectCount;
+    urlRecord.lastAccessed = metrics.lastAccessed;
+
+    const putPromise = env.URLS.put(shortCode, JSON.stringify(urlRecord), getKvPutOptions(urlRecord));
+    ctx.waitUntil(putPromise);
+
     return new Response(null, {
       status: 302,
       headers: {
@@ -338,6 +437,7 @@ async function handleRedirect(request: Request, env: Env, shortCode: string): Pr
     return new Response('Internal Server Error', { status: 500 });
   }
 }
+
 
 async function serveMainPage(request: Request): Promise<Response> {
   const html = `
@@ -854,6 +954,7 @@ async function serveMainPage(request: Request): Promise<Response> {
     <div id="passwordScreen" class="password-screen">
         <div class="password-card elevation-2">
             <h1>URL Shortener</h1>
+            <p>Please enter the password to continue.</p>
             <form id="passwordForm">
                 <div class="form-group">
                     <label for="password" class="form-label">Password</label>
@@ -1162,6 +1263,12 @@ async function serveHistoryPage(request: Request): Promise<Response> {
             flex-wrap: wrap;
             gap: 20px;
         }
+
+        .header-actions {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
         
         h1 {
             color: #202124;
@@ -1227,6 +1334,13 @@ async function serveHistoryPage(request: Request): Promise<Response> {
             border-radius: 12px;
             padding: 32px;
             margin-bottom: 24px;
+        }
+
+        .search-title {
+            margin: 0 0 16px 0;
+            font-size: 20px;
+            font-weight: 500;
+            color: #202124;
         }
         
         .search-form {
@@ -1463,10 +1577,14 @@ async function serveHistoryPage(request: Request): Promise<Response> {
     <div class="app-container">
         <div class="header elevation-1">
             <h1>URL History</h1>
-            <a href="/" class="btn btn-secondary">← Back to Shortener</a>
+            <div class="header-actions">
+                <a href="/" class="btn btn-secondary">← Back to Shortener</a>
+                <a href="/history" class="btn btn-secondary">View All History</a>
+            </div>
         </div>
         
         <div class="search-section elevation-1">
+            <h2 class="search-title">Search in notes</h2>
             <form id="searchForm" class="search-form">
                 <input 
                     type="text" 
@@ -1632,4 +1750,71 @@ function generateShortCode(): string {
     result += chars.charAt(Math.floor(Math.random() * chars.length));
   }
   return result;
+}
+
+
+export class RedirectCounter {
+  constructor(private readonly state: DurableObjectState) {}
+
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+
+    switch (url.pathname) {
+      case '/increment':
+        if (request.method !== 'POST') {
+          return new Response('Method Not Allowed', { status: 405 });
+        }
+        return this.handleIncrement();
+      case '/stats':
+        return this.handleStats();
+      case '/reset':
+        if (request.method !== 'POST') {
+          return new Response('Method Not Allowed', { status: 405 });
+        }
+        return this.handleReset();
+      default:
+        return new Response('Not Found', { status: 404 });
+    }
+  }
+
+  private async handleIncrement(): Promise<Response> {
+    const current = (await this.state.storage.get<number>('count')) ?? 0;
+    const next = current + 1;
+    const lastAccessed = Date.now();
+
+    await this.state.storage.put('count', next);
+    await this.state.storage.put('lastAccessed', lastAccessed);
+
+    return new Response(JSON.stringify({
+      redirectCount: next,
+      lastAccessed,
+    }), {
+      headers: {
+        'Content-Type': 'application/json',
+      }
+    });
+  }
+
+  private async handleStats(): Promise<Response> {
+    const count = (await this.state.storage.get<number>('count')) ?? 0;
+    const lastAccessed = await this.state.storage.get<number>('lastAccessed');
+
+    if (count === 0 && typeof lastAccessed !== 'number') {
+      return new Response('Not Found', { status: 404 });
+    }
+
+    return new Response(JSON.stringify({
+      redirectCount: count,
+      lastAccessed: typeof lastAccessed === 'number' ? lastAccessed : undefined,
+    }), {
+      headers: {
+        'Content-Type': 'application/json',
+      }
+    });
+  }
+
+  private async handleReset(): Promise<Response> {
+    await this.state.storage.deleteAll();
+    return new Response(null, { status: 204 });
+  }
 }

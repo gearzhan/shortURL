@@ -1,140 +1,65 @@
-# 🔗 URL Shortener
+# shortURL - Cloudflare Workers URL Shortener
 
-一个基于 Cloudflare Workers 构建的快速、可扩展的短链接服务。
+A production-focused URL shortener built on Cloudflare Workers, KV storage, and Durable Objects. It provides a password-protected dashboard, REST API, and lightweight analytics for redirect usage.
 
-## ✨ 核心功能
+## Features
+- Shorten URLs with optional human-readable descriptions
+- Track redirect counts and last access times using a Durable Object counter
+- Optional 30-day expiration per link; permanent links remain until removed
+- Search previously created links by description and browse recent activity
+- CORS-enabled REST API plus a responsive web UI for internal operators
 
-- **🔗 URL 短链生成**: 将长链接转换为短链接
-- **📝 描述标注**: 为每个链接添加描述便于管理
-- **📊 访问统计**: 跟踪重定向次数和访问时间
-- **🔍 搜索功能**: 通过描述搜索链接
-- **🌐 API 支持**: 完整的 REST API
-- **⚡ 边缘计算**: 运行在 Cloudflare 全球边缘网络
-- **🎨 Web 界面**: 现代化响应式界面
+## Architecture
+- **Worker**: Handles the HTTP surface area (API, UI pages, redirects)
+- **KV Namespace (`URLS`)**: Stores the canonical short URL records
+- **Durable Object (`RedirectCounter`)**: Provides strongly consistent redirect counters
+- **Wrangler**: Builds, runs, and deploys the worker, KV, and Durable Object bindings
 
-## 🚀 快速开始
-
-### 环境要求
-
-- [Node.js](https://nodejs.org/) (v18+)
-- [Cloudflare 账户](https://dash.cloudflare.com/sign-up)
-- [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/install-and-update/)
-
-### 安装部署
-
-1. **克隆项目**
-   ```bash
-   git clone <your-repo-url>
-   cd shortURL
-   ```
-
-2. **安装依赖**
+## Getting Started
+1. Install dependencies:
    ```bash
    npm install
    ```
-
-3. **创建 KV 存储**
+2. Generate KV namespaces (production + preview) if you have not already:
    ```bash
    npx wrangler kv:namespace create "URLS"
    npx wrangler kv:namespace create "URLS" --preview
    ```
-
-4. **更新配置**
-   
-   在 `wrangler.jsonc` 中更新 KV namespace ID:
-   ```json
-   {
-     "kv_namespaces": [
-       {
-         "binding": "URLS",
-         "id": "your-production-kv-id",
-         "preview_id": "your-preview-kv-id"
-       }
-     ]
-   }
-   ```
-
-5. **部署**
+3. Apply the Durable Object migration before the first deploy:
    ```bash
-   npm run deploy
+   npx wrangler deploy --dry-run --outdir=dist
+   # verify the plan includes the RedirectCounter migration
+   ```
+4. Start local development in a Miniflare-like environment:
+   ```bash
+   npm run dev
    ```
 
-## 🛠️ 开发
-
-### 本地开发
-```bash
-npm run dev
-```
-
-### 运行测试
+## Testing
+Run the Vitest suite (includes Cloudflare test harness and Durable Object runner):
 ```bash
 npm test
 ```
 
-## 📖 API 文档
-
-### 创建短链接
-**POST** `/api/urls`
-
-```json
-{
-  "url": "https://example.com/very-long-url",
-  "description": "链接描述"
-}
+## Deployment
+Deploy to Cloudflare Workers (runs pending migrations automatically):
+```bash
+npm run deploy
 ```
 
-### 获取链接列表
-**GET** `/api/urls`
+## REST API Reference
+- **POST `/api/urls`** � Create a new short URL. Body supports `url`, optional `description`, and optional `expirationType` (`"permanent"` or `"30days"`).
+- **GET `/api/urls`** � List recent URLs. Accepts `limit` (defaults to 50, capped at 1000) and `cursor` for pagination.
+- **GET `/api/urls/search?q=term`** � Case-insensitive description search. Returns `scanLimitHit` when the server stops scanning additional records.
+- **GET `/api/urls/stats?code=abc123`** � Retrieve redirect metrics, creation time, and expiration metadata for a specific code.
+- **GET `/{shortCode}`** � Redirect to the original URL, or return `410 Gone` if the link is expired.
 
-查询参数:
-- `limit`: 返回数量 (默认: 50)
-- `cursor`: 分页游标
+## Operational Notes
+- The worker automatically resets Durable Object counters when a short code is created or expires, so recycled codes never inherit stale metrics.
+- Redirect counters update through a Durable Object to avoid KV race conditions under concurrency.
+- Expired links are filtered from API responses and deleted on demand when a redirect is attempted.
 
-### 搜索链接
-**GET** `/api/urls/search?q=关键词`
-
-### 获取统计信息
-**GET** `/api/urls/stats?code=短码`
-
-### 重定向
-**GET** `/{shortCode}`
-
-## 🎨 Web 界面
-
-访问根路径即可使用 Web 界面:
-- 创建短链接
-- 查看最近链接
-- 搜索历史记录
-- 查看访问统计
-
-## 🔧 配置
-
-### 数据结构
-
-```typescript
-interface UrlRecord {
-  originalUrl: string;      // 原始链接
-  shortCode: string;        // 短码
-  description: string;      // 描述
-  createdAt: number;        // 创建时间
-  redirectCount: number;    // 重定向次数
-  lastAccessed?: number;    // 最后访问时间
-}
-```
-
-### 自定义配置
-
-- **短码生成**: 修改 `generateShortCode()` 函数
-- **界面样式**: 修改 `serveMainPage()` 中的 CSS
-- **验证规则**: 更新 URL 验证和描述长度规则
-
-## 📝 许可证
-
-MIT License
-
-## 🆘 支持
-
-如遇问题请查看:
-1. [Cloudflare Workers 文档](https://developers.cloudflare.com/workers/)
-2. 项目测试用例
-3. GitHub Issues
+## Contributing
+- Keep TypeScript changes ASCII-only unless Unicode is required for user-visible text.
+- Run `npm test` before submitting patches to ensure Workers + Durable Object logic still passes the harness.
+- Update `agents.md` whenever operational responsibilities change.
