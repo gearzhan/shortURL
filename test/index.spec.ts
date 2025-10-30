@@ -102,7 +102,7 @@ describe('URL Shortener Worker', () => {
     expect(data.error).toBe('Invalid URL');
   });
 
-  it('tracks redirect metrics using Durable Objects', async () => {
+  it('tracks redirect metrics after redirects', async () => {
     const createRequest = new IncomingRequest('http://example.com/api/urls', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

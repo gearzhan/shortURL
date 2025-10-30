@@ -1,10 +1,10 @@
 # shortURL - Cloudflare Workers URL Shortener
 
-A production-focused URL shortener built on Cloudflare Workers, KV storage, and Durable Objects. It provides a password-protected dashboard, REST API, and lightweight analytics for redirect usage.
+A production-focused URL shortener built on Cloudflare Workers and KV storage. It provides a password-protected dashboard, REST API, and lightweight analytics for redirect usage.
 
 ## Features
 - Shorten URLs with optional human-readable descriptions
-- Track redirect counts and last access times using a Durable Object counter
+- Track redirect counts and last access times directly in KV
 - Optional 30-day expiration per link; permanent links remain until removed
 - Search previously created links by description and browse recent activity
 - Lock critical records and run manual or bulk clean-up on stale entries without risking mistakes
@@ -13,8 +13,7 @@ A production-focused URL shortener built on Cloudflare Workers, KV storage, and 
 ## Architecture
 - **Worker**: Handles the HTTP surface area (API, UI pages, redirects)
 - **KV Namespace (`URLS`)**: Stores the canonical short URL records
-- **Durable Object (`RedirectCounter`)**: Provides strongly consistent redirect counters
-- **Wrangler**: Builds, runs, and deploys the worker, KV, and Durable Object bindings
+- **Wrangler**: Builds, runs, and deploys the worker alongside its KV bindings
 
 ## Getting Started
 1. Install dependencies:
@@ -26,18 +25,13 @@ A production-focused URL shortener built on Cloudflare Workers, KV storage, and 
    npx wrangler kv:namespace create "URLS"
    npx wrangler kv:namespace create "URLS" --preview
    ```
-3. Apply the Durable Object migration before the first deploy:
-   ```bash
-   npx wrangler deploy --dry-run --outdir=dist
-   # verify the plan includes the RedirectCounter migration
-   ```
-4. Start local development in a Miniflare-like environment:
+3. Start local development in a Miniflare-like environment:
    ```bash
    npm run dev
    ```
 
 ## Testing
-Run the Vitest suite (includes Cloudflare test harness and Durable Object runner):
+Run the Vitest suite (includes the Cloudflare test harness):
 ```bash
 npm test
 ```
@@ -59,13 +53,12 @@ npm run deploy
 - **GET `/{shortCode}`** - Redirect to the original URL, or return `410 Gone` if the link is expired.
 
 ## Operational Notes
-- The worker automatically resets Durable Object counters when a short code is created or expires, so recycled codes never inherit stale metrics.
-- Redirect counters update through a Durable Object to avoid KV race conditions under concurrency.
+- Redirect counters update in KV on each redirect; note that increments are eventually consistent under heavy concurrency.
 - Expired links are filtered from API responses and deleted on demand when a redirect is attempted.
 - Locked records are skipped by deletion endpoints and UI actions until you explicitly unlock them.
 - The history UI targets records older than 120 days for quick clean-up; adjust the retention window with the `bulk-delete` endpoint when needed.
 
 ## Contributing
 - Keep TypeScript changes ASCII-only unless Unicode is required for user-visible text.
-- Run `npm test` before submitting patches to ensure Workers + Durable Object logic still passes the harness.
+- Run `npm test` before submitting patches to ensure the worker logic still passes the harness.
 - Update `agents.md` whenever operational responsibilities change.

@@ -25,11 +25,10 @@ interface UrlRecord {
 
 interface Env {
   URLS: KVNamespace;
-  COUNTERS: DurableObjectNamespace;
 }
 
 export default {
-  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname.slice(1); // Remove leading slash
 
@@ -58,7 +57,7 @@ export default {
 
       // Short URL redirect
       if (path && path.length > 0) {
-        return await handleRedirect(request, env, path, ctx);
+        return await handleRedirect(request, env, path);
       }
 
       // Serve the main page
@@ -170,7 +169,6 @@ async function createShortUrl(request: Request, env: Env, corsHeaders: Record<st
       locked: false,
     };
 
-    await resetRedirectMetrics(env, shortCode);
     await env.URLS.put(shortCode, JSON.stringify(urlRecord), getKvPutOptions(urlRecord));
 
     const shortUrl = `${new URL(request.url).origin}/${shortCode}`;
@@ -279,7 +277,6 @@ async function deleteShortUrl(request: Request, env: Env, corsHeaders: Record<st
     }
 
     await env.URLS.delete(shortCode);
-    await resetRedirectMetrics(env, shortCode);
 
     return new Response(null, {
       status: 204,
@@ -326,7 +323,6 @@ async function bulkDeleteUrls(request: Request, env: Env, corsHeaders: Record<st
         }
 
         await env.URLS.delete(shortCode);
-        await resetRedirectMetrics(env, shortCode);
         result.deleted++;
       }
 
@@ -364,7 +360,6 @@ async function bulkDeleteUrls(request: Request, env: Env, corsHeaders: Record<st
         }
 
         await env.URLS.delete(key.name);
-        await resetRedirectMetrics(env, key.name);
         result.deleted++;
       }
 
@@ -539,17 +534,11 @@ async function getUrlStats(request: Request, env: Env, corsHeaders: Record<strin
     }
 
     const urlRecord: UrlRecord = JSON.parse(value);
-    const metrics = await fetchRedirectMetrics(env, shortCode);
-
-    if (metrics) {
-      urlRecord.redirectCount = metrics.redirectCount;
-      urlRecord.lastAccessed = metrics.lastAccessed;
-    }
 
     return new Response(JSON.stringify({
       shortCode: urlRecord.shortCode,
       originalUrl: urlRecord.originalUrl,
-      redirectCount: urlRecord.redirectCount,
+      redirectCount: urlRecord.redirectCount ?? 0,
       createdAt: urlRecord.createdAt,
       lastAccessed: urlRecord.lastAccessed ?? null,
       expiresAt: urlRecord.expiresAt ?? null,
@@ -576,48 +565,7 @@ function getKvPutOptions(record: UrlRecord): KVNamespacePutOptions | undefined {
   return undefined;
 }
 
-async function incrementRedirectMetrics(env: Env, shortCode: string): Promise<{ redirectCount: number; lastAccessed: number }> {
-  const id = env.COUNTERS.idFromName(shortCode);
-  const stub = env.COUNTERS.get(id);
-  const response = await stub.fetch('https://counter/increment', { method: 'POST' });
-
-  if (!response.ok) {
-    throw new Error(`Failed to increment redirect metrics (${response.status})`);
-  }
-
-  const data = await response.json() as { redirectCount: number; lastAccessed: number };
-  return data;
-}
-
-async function fetchRedirectMetrics(env: Env, shortCode: string): Promise<{ redirectCount: number; lastAccessed?: number } | null> {
-  const id = env.COUNTERS.idFromName(shortCode);
-  const stub = env.COUNTERS.get(id);
-  const response = await stub.fetch('https://counter/stats');
-
-  if (response.status === 404) {
-    return null;
-  }
-
-  if (!response.ok) {
-    console.warn(`Failed to fetch redirect metrics (${response.status})`);
-    return null;
-  }
-
-  const data = await response.json() as { redirectCount: number; lastAccessed?: number };
-  return data;
-}
-
-async function resetRedirectMetrics(env: Env, shortCode: string): Promise<void> {
-  const id = env.COUNTERS.idFromName(shortCode);
-  const stub = env.COUNTERS.get(id);
-  const response = await stub.fetch('https://counter/reset', { method: 'POST' });
-
-  if (!response.ok && response.status !== 404) {
-    console.warn(`Failed to reset redirect metrics (${response.status})`);
-  }
-}
-
-async function handleRedirect(request: Request, env: Env, shortCode: string, ctx: ExecutionContext): Promise<Response> {
+async function handleRedirect(request: Request, env: Env, shortCode: string): Promise<Response> {
   try {
     const value = await env.URLS.get(shortCode);
     if (!value) {
@@ -628,16 +576,13 @@ async function handleRedirect(request: Request, env: Env, shortCode: string, ctx
 
     if (urlRecord.expiresAt && Date.now() > urlRecord.expiresAt) {
       await env.URLS.delete(shortCode);
-      ctx.waitUntil(resetRedirectMetrics(env, shortCode));
       return new Response('URL has expired', { status: 410 });
     }
 
-    const metrics = await incrementRedirectMetrics(env, shortCode);
-    urlRecord.redirectCount = metrics.redirectCount;
-    urlRecord.lastAccessed = metrics.lastAccessed;
+    urlRecord.redirectCount = (urlRecord.redirectCount ?? 0) + 1;
+    urlRecord.lastAccessed = Date.now();
 
-    const putPromise = env.URLS.put(shortCode, JSON.stringify(urlRecord), getKvPutOptions(urlRecord));
-    ctx.waitUntil(putPromise);
+    await env.URLS.put(shortCode, JSON.stringify(urlRecord), getKvPutOptions(urlRecord));
 
     return new Response(null, {
       status: 302,

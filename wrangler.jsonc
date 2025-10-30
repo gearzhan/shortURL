@@ -17,24 +17,7 @@
 			"id": "e930a18c42544f58a72601af6bcb4215",
 			"preview_id": "6675ed43b3224481846f48b443f1b2ac"
 		}
-	],
-	"durable_objects": {
-		"bindings": [
-			{
-				"name": "COUNTERS",
-				"class_name": "RedirectCounter"
-			}
-		]
-	},
-
-	"migrations": [
-		{
-			"tag": "v1",
-			"new_sqlite_classes": ["RedirectCounter"]
-		}
-	],
-
-
+	]
 
 	// Environment variables can be added here if needed
 	// "vars": { "MY_VARIABLE": "production_value" },
