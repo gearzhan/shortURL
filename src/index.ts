@@ -848,7 +848,43 @@ async function serveMainPage(request: Request): Promise<Response> {
         .btn-danger:hover {
             background: #b31412;
         }
-        
+
+        .icon-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 28px;
+            height: 28px;
+            border-radius: 6px;
+            border: 1px solid transparent;
+            background: #f1f3f4;
+            color: #5f6368;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .icon-btn:hover:not([disabled]) {
+            background: #e8eaed;
+            color: #202124;
+        }
+
+        .icon-btn.locked {
+            background: #fce8e6;
+            color: #b31412;
+            border-color: #f8bbb0;
+        }
+
+        .icon-btn.danger {
+            background: #fde0dc;
+            color: #b31412;
+        }
+
+        .icon-btn[disabled] {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
         .btn-success {
             background: #137333;
             color: white;
@@ -1004,8 +1040,9 @@ async function serveMainPage(request: Request): Promise<Response> {
         
         .url-item {
             background: #f8f9fa;
-            border-radius: 6px;
-            padding: 14px;
+            border-radius: 8px;
+            padding: 14px 16px;
+            margin-bottom: 10px;
             border: 1px solid #e8eaed;
             transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
         }
@@ -1018,25 +1055,37 @@ async function serveMainPage(request: Request): Promise<Response> {
         .url-header {
             display: flex;
             justify-content: space-between;
-            align-items: center;
-            margin-bottom: 16px;
-            padding-bottom: 12px;
+            align-items: flex-start;
+            margin-bottom: 12px;
+            padding-bottom: 8px;
             border-bottom: 1px solid #e8eaed;
             gap: 12px;
         }
 
+        .url-toolbar,
         .url-header-main {
             display: flex;
             align-items: center;
-            gap: 12px;
+            gap: 10px;
+            flex: 1;
+            min-width: 0;
             flex-wrap: wrap;
+        }
+
+        .record-checkbox {
+            margin-right: 2px;
         }
 
         .url-description {
             color: #202124;
             font-weight: 500;
-            font-size: 15px;
+            font-size: 14px;
             letter-spacing: 0.15px;
+            flex: 1;
+            min-width: 140px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
         
         .url-date {
@@ -1071,25 +1120,19 @@ async function serveMainPage(request: Request): Promise<Response> {
         
         .url-stats {
             display: flex;
-            gap: 12px;
+            gap: 8px;
             flex-wrap: wrap;
-        }
-
-        .url-actions {
-            display: flex;
-            gap: 12px;
-            flex-wrap: wrap;
-            margin-top: 16px;
+            margin-top: 6px;
         }
 
         .stat-chip {
             background: #e8f0fe;
             color: #1a73e8;
-            padding: 4px 12px;
-            border-radius: 16px;
-            font-size: 12px;
+            padding: 3px 10px;
+            border-radius: 14px;
+            font-size: 11px;
             font-weight: 500;
-            letter-spacing: 0.25px;
+            letter-spacing: 0.15px;
         }
         
         .stat-chip.success {
@@ -1694,12 +1737,12 @@ async function serveHistoryPage(request: Request): Promise<Response> {
         .url-item {
             background: #f8f9fa;
             border-radius: 8px;
-            padding: 24px;
-            margin-bottom: 16px;
+            padding: 14px 16px;
+            margin-bottom: 10px;
             border: 1px solid #e8eaed;
             transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
         }
-        
+
         .url-item:hover {
             background: #f1f3f4;
             transform: translateY(-1px);
@@ -1718,42 +1761,61 @@ async function serveHistoryPage(request: Request): Promise<Response> {
         .url-header {
             display: flex;
             justify-content: space-between;
-            align-items: center;
-            margin-bottom: 16px;
-            padding-bottom: 12px;
+            align-items: flex-start;
+            margin-bottom: 12px;
+            padding-bottom: 8px;
             border-bottom: 1px solid #e8eaed;
+            gap: 12px;
         }
-        
+
+        .url-toolbar,
+        .url-header-main {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex: 1;
+            min-width: 0;
+            flex-wrap: wrap;
+        }
+
+        .record-checkbox {
+            margin-right: 2px;
+        }
+
         .url-description {
             color: #202124;
             font-weight: 500;
-            font-size: 16px;
+            font-size: 14px;
             letter-spacing: 0.15px;
+            flex: 1;
+            min-width: 140px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
-        
+
         .url-date {
             color: #9aa0a6;
-            font-size: 14px;
+            font-size: 12px;
             font-weight: 400;
             text-align: right;
         }
-        
+
         .url-original {
-            display: none;
             color: #5f6368;
-            font-size: 14px;
-            margin-bottom: 8px;
-            word-break: break-all;
+            font-size: 12px;
+            margin-bottom: 6px;
+            word-break: break-word;
             font-weight: 400;
         }
-        
+
         .url-short {
             color: #1a73e8;
-            font-size: 14px;
-            margin-bottom: 12px;
+            font-size: 13px;
+            margin-bottom: 6px;
             font-weight: 500;
         }
-        
+
         .url-stats {
             display: flex;
             gap: 12px;
@@ -1763,11 +1825,11 @@ async function serveHistoryPage(request: Request): Promise<Response> {
         .stat-chip {
             background: #e8f0fe;
             color: #1a73e8;
-            padding: 4px 12px;
-            border-radius: 16px;
-            font-size: 12px;
+            padding: 3px 10px;
+            border-radius: 14px;
+            font-size: 11px;
             font-weight: 500;
-            letter-spacing: 0.25px;
+            letter-spacing: 0.15px;
         }
         
         .stat-chip.success {
@@ -2257,12 +2319,20 @@ async function serveHistoryPage(request: Request): Promise<Response> {
                         : '<span class="stat-chip warning">Expires: ' + expiresText + '</span>';
                 }
 
+                const descriptionText = url.description ? url.description : '(no description)';
+
                 return \`
                     <div class="url-item elevation-1\${locked ? ' locked' : ''}">
                         <div class="url-header">
-                            <div class="url-header-main">
-                                <input type="checkbox" class="record-checkbox" data-code="\${url.shortCode}" \${locked ? 'disabled' : ''} \${selectedCodes.has(url.shortCode) ? 'checked' : ''} onchange="handleCheckboxChange('\${url.shortCode}', this.checked)">
-                                <span class="url-description">\${url.description ? url.description : '(no description)'}</span>
+                            <div class="url-toolbar">
+                                <input type="checkbox" class="record-checkbox" data-code="\${url.shortCode}" \${locked ? 'disabled' : ''} \${selectedCodes.has(url.shortCode) ? 'checked' : ''} onchange="handleCheckboxChange('\${url.shortCode}', this.checked)" aria-label="Select \${descriptionText}">
+                                <button class="icon-btn \${locked ? 'locked' : ''}" type="button" title="\${locked ? 'Unlock record' : 'Lock record'}" aria-pressed="\${locked ? 'true' : 'false'}" onclick="toggleLock('\${url.shortCode}', \${locked ? 'false' : 'true'})">
+                                    \${locked ? '&#128274;' : '&#128275;'}
+                                </button>
+                                <button class="icon-btn danger" type="button" title="Delete record" onclick="deleteSingle('\${url.shortCode}')" \${locked ? 'disabled' : ''}>
+                                    &#128465;
+                                </button>
+                                <span class="url-description" title="\${descriptionText}">\${descriptionText}</span>
                                 \${locked ? '<span class="stat-chip danger">Locked</span>' : ''}
                             </div>
                             <span class="url-date">\${createdAt}</span>
@@ -2274,14 +2344,6 @@ async function serveHistoryPage(request: Request): Promise<Response> {
                             <span class="stat-chip warning">Last: \${lastAccessed}</span>
                             \${expirationInfo}
                         </div>
-                        <div class="url-actions">
-                            <button class="btn btn-secondary" onclick="toggleLock('\${url.shortCode}', \${locked ? 'false' : 'true'})">
-                                \${locked ? 'Unlock' : 'Lock'}
-                            </button>
-                            <button class="btn btn-danger" onclick="deleteSingle('\${url.shortCode}')" \${locked ? 'disabled' : ''}>
-                                Delete
-                            </button>
-                        </div>
                     </div>
                 \`;
             }).join('');
@@ -2289,7 +2351,7 @@ async function serveHistoryPage(request: Request): Promise<Response> {
             urlList.innerHTML = urlsHtml;
             updateSelectionUI();
         }
-    </script></script>
+    </script>
 </body>
 </html>`;
 
