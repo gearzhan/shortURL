@@ -27,6 +27,8 @@ interface Env {
   URLS: KVNamespace;
 }
 
+const MAX_PARALLEL_KV_READS = 16;
+
 export default {
   async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
@@ -116,6 +118,53 @@ async function handleApiRequest(request: Request, env: Env, endpoint: string): P
     status: 404,
     headers: corsHeaders
   });
+}
+
+async function hydrateUrlRecords(
+  env: Env,
+  keyNames: readonly string[],
+  now: number,
+  concurrency: number = MAX_PARALLEL_KV_READS,
+): Promise<UrlRecord[]> {
+  if (keyNames.length === 0) {
+    return [];
+  }
+
+  const safeConcurrency = Math.max(1, Math.min(concurrency, keyNames.length));
+  const results: UrlRecord[] = [];
+  let index = 0;
+
+  const workers = Array.from({ length: safeConcurrency }, async () => {
+    while (true) {
+      const currentIndex = index++;
+      if (currentIndex >= keyNames.length) {
+        break;
+      }
+
+      const keyName = keyNames[currentIndex];
+
+      try {
+        const record = await env.URLS.get<UrlRecord>(keyName, { type: 'json' });
+        if (!record) {
+          continue;
+        }
+
+        record.shortCode = record.shortCode || keyName;
+        record.locked = Boolean(record.locked);
+
+        if (record.expiresAt && now > record.expiresAt) {
+          continue;
+        }
+
+        results.push(record);
+      } catch (error) {
+        console.error('Failed to hydrate URL record', keyName, error);
+      }
+    }
+  });
+
+  await Promise.all(workers);
+  return results;
 }
 
 
@@ -210,23 +259,9 @@ async function listUrls(request: Request, env: Env, corsHeaders: Record<string, 
     const cursor = url.searchParams.get('cursor') || undefined;
 
     const listResult = await env.URLS.list({ limit, cursor });
-    const urls: UrlRecord[] = [];
-
-    for (const key of listResult.keys) {
-      const value = await env.URLS.get(key.name);
-      if (!value) {
-        continue;
-      }
-
-      const record = JSON.parse(value) as UrlRecord;
-      record.locked = Boolean(record.locked);
-
-      if (record.expiresAt && Date.now() > record.expiresAt) {
-        continue;
-      }
-
-      urls.push(record);
-    }
+    const now = Date.now();
+    const keyNames = listResult.keys.map((key) => key.name);
+    const urls = await hydrateUrlRecords(env, keyNames, now);
 
     urls.sort((a, b) => b.createdAt - a.createdAt);
 
@@ -459,24 +494,17 @@ async function searchUrls(request: Request, env: Env, corsHeaders: Record<string
     let scanLimitHit = false;
     const matches: UrlRecord[] = [];
     const normalizedQuery = query.toLowerCase();
+    const now = Date.now();
 
     do {
       const listResult = await env.URLS.list({ cursor, limit: listLimit });
       cursor = listResult.cursor;
       scanned += listResult.keys.length;
 
-      for (const key of listResult.keys) {
-        const value = await env.URLS.get(key.name);
-        if (!value) {
-          continue;
-        }
+      const keyNames = listResult.keys.map((key) => key.name);
+      const records = await hydrateUrlRecords(env, keyNames, now);
 
-        const record = JSON.parse(value) as UrlRecord;
-        record.locked = Boolean(record.locked);
-        if (record.expiresAt && Date.now() > record.expiresAt) {
-          continue;
-        }
-
+      for (const record of records) {
         if (record.description && record.description.toLowerCase().includes(normalizedQuery)) {
           matches.push(record);
         }
