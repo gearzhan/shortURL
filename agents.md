@@ -1,32 +1,37 @@
-# Agents
+# Repository Guidelines
 
-The short URL worker can be managed by a small set of operational "agents" - human or automated roles that keep the service healthy. Use this guide to understand their scope and hand-offs.
+## Project Structure & Module Organization
+- `src/index.ts` holds the Cloudflare Worker with routing, KV helpers, analytics, and guard rails.
+- `test/index.spec.ts` runs in Vitest’s Workers pool; shared types sit in `test/env.d.ts`.
+- Operational settings live in `wrangler.jsonc`, `tsconfig.json`, and `worker-configuration.d.ts`; keep `.wrangler/` local-only.
 
-## 1. Runtime Agent
-- Owns deployment to Cloudflare Workers through Wrangler.
-- Verifies environment bindings (KV namespaces, secrets) before each deploy.
-- Monitors worker logs and error rates; escalates incidents.
+## Build, Test, and Development Commands
+- `npm install` brings in Wrangler, Vitest, and TypeScript dependencies.
+- `npm run dev` starts a local worker tunnel; `npm run deploy` publishes to Workers using `wrangler.jsonc`.
+- `npm test` executes Vitest; append `--runInBand` for flaky suites.
+- `npm run cf-typegen` regenerates `worker-configuration.d.ts` after binding edits.
 
-## 2. Data Steward Agent
-- Manages the `URLS` KV namespace lifecycle.
-- Reviews requests for manual URL cleanup or recovery.
-- Audits access controls and retention policies.
+## Coding Style & Naming Conventions
+- TypeScript with 2-space indentation, single-quoted strings, and minimal trailing commas.
+- Use descriptive camelCase for symbols; reserve SCREAMING_CASE for environment bindings.
+- Keep handlers pure when possible and funnel I/O through `env.URLS`.
 
-## 3. Product Support Agent
-- Handles user-reported issues via the REST API or web UI.
-- Confirms redirect analytics accuracy and communicates status.
-- Coordinates with Runtime and Data Steward agents on fixes.
+## Testing Guidelines
+- Vitest with `@cloudflare/vitest-pool-workers` powers `test/*.spec.ts`.
+- Name suites after the behavior under test (`describe('redirect analytics', ...)`) and include auth edge cases.
+- Chase >90% coverage on redirect paths and run `npm test -- --coverage` before release sign-off.
 
-## 4. Quality Agent
-- Runs `npm test` and other validation workflows.
-- Tracks flaky tests or regressions and files actionable tickets.
-- Signs off on release readiness ahead of production deploys.
+## Commit & Pull Request Guidelines
+- Write imperative commit subjects (`Add lock-aware pruning`) ≤72 characters and reference issues (`#123`) when relevant.
+- PRs must outline user impact, document test evidence, and include UI screenshots; tag needed agent reviewers.
 
-## Quick Start Checklist
-1. Install dependencies: `npm install`.
-2. Generate KV namespaces with Wrangler and update `wrangler.jsonc`.
-3. Run `npm run dev` for local testing; `npm run deploy` when ready.
+## Agent Responsibilities
+- Runtime Agent safeguards Wrangler deploys, validates bindings, and monitors `wrangler tail` after releases.
+- Data Steward Agent manages the `URLS` namespace lifecycle, approves cleanup, and audits retention.
+- Product Support Agent triages API/UI reports, double-checks analytics, and coordinates cross-agent fixes.
+- Quality Agent runs `npm test`, tracks flakiness, and withholds release sign-off without regression proof.
 
-Document updates: keep this file current as new roles or automation emerge.
-
-
+## Security & Configuration Tips
+- Store secrets with `wrangler secret put`; never commit them.
+- Keep KV namespaces aligned across environments and log changes here.
+- Review Cloudflare access quarterly and revoke stale tokens promptly.
